@@ -1,0 +1,26 @@
+{
+  "api_base": "https://api.deepseek.com/v1",
+  "api_key": "在此填写你的大模型 API Key（明文保存，勿分享本文件），或改用环境变量 AI_API_KEY（推荐）",
+  "model": "deepseek-chat",
+
+  "models": [
+    {
+      "id": "m_default",
+      "name": "默认模型",
+      "api_base": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "api_key": "同样是明文；可在「设置 → 模型与 Key」里增删改",
+      "note": "可放多个模型：换个名字、地址、模型名与 Key 即可切换使用"
+    }
+  ],
+  "active_model_id": "m_default",
+
+  "versions": 3,
+  "context_messages": 5,
+  "hotkey": "ctrl+alt+p",
+  "grab_timeout": 10,
+  "ocr_context": true,
+  "tray_pos": null,
+  "system_prompt": "你是一名专业的职场沟通润色助手，用户在做银行/技术对接的微信或飞书群聊沟通。请根据对话上下文，把用户草拟的内容润色成得体、专业、可直接发送的话术。保持原意与事实，不要编造信息；语气尊重、简洁；可按不同风格给多个版本。",
+  "extra_instruction": "按场景给出：1个稳妥推荐版 + 其余风格差异化（简短版 / 正式版 / 承接对方话术版）。"
+}

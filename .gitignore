@@ -1,0 +1,33 @@
+# ---- 敏感信息：含真实 API Key，绝不能进版本库 ----
+config.json
+config - *.json
+.env
+
+# ---- 构建产物 ----
+build/
+dist/
+dist_diagnose/
+*.pkg
+
+# ---- 运行时生成 ----
+*.log
+polish.log
+debug.log
+.wechat_polish.lock
+
+# ---- 诊断工具的产出报告 ----
+诊断报告*.txt
+控件树*.txt
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ---- 编辑器 / IDE 本地配置 ----
+.codebuddy/
+.vscode/
+.idea/

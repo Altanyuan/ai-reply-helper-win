@@ -1,0 +1,18 @@
+pynput>=1.7.6
+pyperclip>=1.8.2
+uiautomation>=2.0.17
+requests>=2.31.0
+Pillow>=10.0.0
+# Windows Graphics Capture 绑定（微信 4.x 采集：截窗口而非截屏，被遮挡也能截）。
+# 它硬依赖 opencv-python（会一起装上，打包体积 +约 45MB）；缺失时自动回落到截屏 OCR。
+windows-capture; sys_platform == "win32"
+
+# Windows 自带 OCR 的 Python 绑定（微信 4.x 读取聊天上下文必需；缺失时自动降级为无上下文润色）
+# 注意：必须用 winrt-* 分包。单体 winsdk / winrt 在 Python 3.13 上没有预编译 wheel，安装会失败。
+winrt-runtime; sys_platform == "win32"
+winrt-Windows.Media.Ocr; sys_platform == "win32"
+winrt-Windows.Globalization; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging; sys_platform == "win32"
+winrt-Windows.Storage.Streams; sys_platform == "win32"
+winrt-Windows.Foundation; sys_platform == "win32"
+winrt-Windows.Foundation.Collections; sys_platform == "win32"
