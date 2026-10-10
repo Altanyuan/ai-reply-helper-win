@@ -204,7 +204,7 @@ def _handle():
     cfg = config.load_config()
     log.info("热键触发")
     if tray:
-        tray.show_active()  # 按热键 → 右下角切到 2.webp
+        tray.show_working()  # 按热键 → 润润切到工作中状态
     # 记录当前前台窗口（通常是微信输入框），用于回填时还原焦点
     target = None
     try:
@@ -256,6 +256,8 @@ def _handle():
                 master=tray.get_root() if tray else None,
                 on_close=lambda: tray.show_idle() if tray else None,
             )
+        if tray:
+            tray.show_error()  # 抓取失败 → 润润疑惑
         run_ui(_e2)
         return
 
@@ -274,6 +276,8 @@ def _handle():
                 master=tray.get_root() if tray else None,
                 on_close=lambda: tray.show_idle() if tray else None,
             )
+        if tray:
+            tray.show_error()  # 无内容可生成 → 润润疑惑
         run_ui(_e3)
         return
 
@@ -311,6 +315,8 @@ def _handle():
                 master=tray.get_root() if tray else None,
                 on_close=lambda: tray.show_idle() if tray else None,
             )
+        if tray:
+            tray.show_error()  # AI 调用失败 → 润润疑惑
         run_ui(_e4)
         return
 
@@ -322,6 +328,8 @@ def _handle():
                 master=tray.get_root() if tray else None,
                 on_close=lambda: tray.show_idle() if tray else None,
             )
+        if tray:
+            tray.show_error()  # AI 未返回版本 → 润润疑惑
         run_ui(_e5)
         return
 
@@ -342,6 +350,8 @@ def _handle():
             master=tray.get_root() if tray else None,
             on_close=lambda: tray.show_idle() if tray else None,
         )
+    if tray:
+        tray.show_done()  # 结果窗弹出 → 润润开心
     run_ui(_e6)
     return
 
@@ -429,7 +439,8 @@ def main():
         except Exception as e:
             log.warning(f"OCR 状态探测失败（不影响主流程）: {e}")
 
-    # 右下角浮动动图：启动即显示 1.webp，按热键切 2.webp，关弹窗切回 1.webp
+    # 右下角浮动动图：润润四状态（idle=待机 / working=按热键后 /
+    # done=结果窗弹出 / error=失败），done、error 会自动回 idle
     # 图标可用鼠标左键拖动；松手后位置写入 config.json 的 tray_pos，下次启动沿用。
     def _save_tray_pos(x, y):
         try:
@@ -438,8 +449,12 @@ def main():
             log.warning(f"写入托盘动图位置失败（不影响本次使用）: {e}")
 
     tray = make_tray(
-        str(paths.asset(cfg.get("idle_gif", "1.webp"))),
-        str(paths.asset(cfg.get("active_gif", "2.webp"))),
+        {
+            "idle": str(paths.asset(cfg.get("tray_idle_gif", "runrun-idle.webp"))),
+            "working": str(paths.asset(cfg.get("tray_working_gif", "runrun-working.webp"))),
+            "done": str(paths.asset(cfg.get("tray_done_gif", "runrun-done.webp"))),
+            "error": str(paths.asset(cfg.get("tray_error_gif", "runrun-error.webp"))),
+        },
         size=int(cfg.get("tray_size", 220)),
         pos=cfg.get("tray_pos"),
         on_move=_save_tray_pos,

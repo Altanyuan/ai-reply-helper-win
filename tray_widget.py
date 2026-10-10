@@ -1,7 +1,9 @@
-"""右下角浮动动图组件（Windows）。
+"""右下角浮动动图组件（Windows）：润润四状态。
 
-- 程序启动：显示 idle 动图（默认 1.webp），位置默认右下角
-- 用户按热键：切换为 active 动图（默认 2.webp）
+- 程序启动：显示 idle 动图（默认 runrun-idle.webp），位置默认右下角
+- 用户按热键 / 点击图标：切换为 working 动图
+- 结果窗弹出：done 动图开心一下（1.5s 后自动回 idle）
+- 抓取 / AI 失败：error 动图（2s 后自动回 idle）
 - 关闭“优化后语句”弹窗：切回 idle 动图
 - **鼠标左键可拖动图标**，位置限制在屏幕可视区域内，松手后记入配置
 
@@ -148,9 +150,19 @@ def _make_close_button(root, size, on_click):
 
 
 class TrayWidget:
-    def __init__(self, idle_path, active_path, size=220, pos=None, on_move=None):
-        self.idle_path = idle_path
-        self.active_path = active_path
+    """右下角浮动动图：润润四状态（idle / working / done / error）。
+
+    状态切换全部走 queue 指令（线程安全），done / error 会在短暂停留后
+    自动切回 idle（除非期间又有新状态进来，token 会作废旧的回切任务）。
+    为兼容旧调用，show_active() 等价于 show_working()。
+    """
+    STATES = ("idle", "working", "done", "error")
+    # done / error 自动回 idle 的停留时长（毫秒）
+    REVERT_MS = {"done": 1500, "error": 2000}
+
+    def __init__(self, paths, size=220, pos=None, on_move=None):
+        # paths: dict，至少包含 STATES 四个键 -> 动图文件路径
+        self._paths = dict(paths or {})
         self.size = int(size)
         self._cmd = queue.Queue()
         self._cache = {}           # name -> (frames, durs)，解码完成后缓存
@@ -298,8 +310,6 @@ class TrayWidget:
         label.bind("<Enter>", _maybe_show)
         label.bind("<Leave>", _maybe_hide)
 
-        state = {"path": None, "frames": [], "durs": [], "idx": 0, "after_id": None}
-
         def animate():
             frames = state["frames"]
             if not frames:
@@ -329,7 +339,10 @@ class TrayWidget:
                 if ld["frames"]:
                     label.configure(image=ld["frames"][0])
                 return
-            path = self.idle_path if name == "idle" else self.active_path
+            path = self._paths.get(name)
+            if not path:
+                log.warning(f"托盘动图缺少状态 {name!r} 的路径，忽略切换")
+                return
             im = Image.open(path)
             self._pending[name] = {
                 "it": iter(ImageSequence.Iterator(im)),
@@ -373,10 +386,31 @@ class TrayWidget:
             root.after(LOAD_TICK_MS, lambda: _load_tick(name))
 
         def set_state(name):
+            if name not in self.STATES:
+                return
             if state["path"] == name:
                 return
+            # 任何手动切换都作废之前排队的自动回切任务
+            state["revert_token"] = state.get("revert_token", 0) + 1
             state["path"] = name
             _begin_load(name)
+
+        def _show_with_revert(name):
+            """显示 done / error，并在 REVERT_MS 后自动切回 idle。
+
+            用 token 防止竞态：回切触发时若状态已被其它指令改掉，
+            token 对不上就不再回切。
+            """
+            set_state(name)
+            tok = state["revert_token"]
+
+            def _maybe_revert():
+                if state.get("revert_token") == tok and state["path"] == name:
+                    set_state("idle")
+            root.after(self.REVERT_MS[name], _maybe_revert)
+
+        state = {"path": None, "frames": [], "durs": [], "idx": 0,
+                 "after_id": None, "revert_token": 0}
 
         def poll():
             try:
@@ -398,8 +432,15 @@ class TrayWidget:
                         return
                     elif cmd == "idle":
                         set_state("idle")
+                    elif cmd == "working":
+                        set_state("working")
                     elif cmd == "active":
-                        set_state("active")
+                        # 兼容旧调用：active 即 working
+                        set_state("working")
+                    elif cmd == "done":
+                        _show_with_revert("done")
+                    elif cmd == "error":
+                        _show_with_revert("error")
                     elif cmd == "ui":
                         # 在主线程（本 Tcl 解释器）执行弹框构建回调，
                         # 避免业务线程新建 Tk 导致 “Calling Tcl from different
@@ -420,8 +461,21 @@ class TrayWidget:
     def show_idle(self):
         self._cmd.put(("idle", None))
 
+    def show_working(self):
+        """按热键 / 点击图标后：润润进入工作状态。"""
+        self._cmd.put(("working", None))
+
     def show_active(self):
-        self._cmd.put(("active", None))
+        """兼容旧调用，等价于 show_working()。"""
+        self.show_working()
+
+    def show_done(self):
+        """结果窗弹出：润润开心一下，1.5s 后自动回 idle。"""
+        self._cmd.put(("done", None))
+
+    def show_error(self):
+        """抓取 / AI 失败：润润疑惑 2s 后自动回 idle。"""
+        self._cmd.put(("error", None))
 
     def set_command(self, fn):
         """设置点击动图时的回调（由 main.py 注入，与热键等价触发 AI 流程）。"""
@@ -468,13 +522,16 @@ class TrayWidget:
         self._cmd.put(("quit", None))
 
 
-def make_tray(idle_path, active_path, size=220, pos=None, on_move=None):
-    """工厂：文件缺失或初始化失败时返回 None（不影响主流程）。
+def make_tray(paths, size=220, pos=None, on_move=None):
+    """工厂：任一动图缺失或初始化失败时返回 None（不影响主流程）。
 
+    paths: dict，键为 idle / working / done / error，值为动图路径。
     pos:     上次保存的图标位置 (x, y)；缺省或非法时用默认右下角
     on_move: 拖动结束时的回调 (x, y)，由调用方持久化（写入 config.json）
     """
-    if not (idle_path and os.path.exists(idle_path) and os.path.exists(active_path)):
-        print(f"[tray] 动图缺失（{idle_path} / {active_path}），跳过右下角动图。")
+    missing = [k for k in TrayWidget.STATES
+               if not (paths or {}).get(k) or not os.path.exists(paths[k])]
+    if missing:
+        print(f"[tray] 动图缺失（{', '.join(missing)}），跳过右下角动图。")
         return None
-    return TrayWidget(idle_path, active_path, size=size, pos=pos, on_move=on_move)
+    return TrayWidget(paths, size=size, pos=pos, on_move=on_move)

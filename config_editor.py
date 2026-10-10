@@ -28,39 +28,38 @@ import config
 import key_utils
 import paths
 
-# ---- CodeBuddy 风格深色配色 ----
-BG = "#1e1e1e"
-PANEL = "#252526"
-CARD_BG = "#252526"
-ACTIVE_BG = "#2d3a2f"
-BORDER = "#3c3c3c"
-ACTIVE_BORDER = "#4ec9b0"
-TEXT = "#d4d4d4"
-MUTED = "#9da5b4"
-ACCENT = "#0e639c"
-ACCENT_HOVER = "#1177bb"
-SECONDARY = "#3a3d41"
-SECONDARY_HOVER = "#4a4d51"
-OK = "#4ec9b0"
-WARN = "#dcdcaa"
-BAD = "#f48771"
-DANGER = "#a1260d"
-DANGER_HOVER = "#c0301a"
-BADGE_BUILTIN_BG = "#3a3d41"
-BADGE_CUSTOM_BG = "#3b3552"
-ERR_BORDER = "#f48771"
+# ---- 浅色清爽风配色（2026-10-10 重设计：提示词工作室）----
+BG = "#f6f8f9"
+PANEL = "#ffffff"
+CARD_BG = "#ffffff"
+ACTIVE_BG = "#e6f7f2"
+BORDER = "#e2e6ea"
+ACTIVE_BORDER = "#0d9d80"
+TEXT = "#1f2329"
+MUTED = "#6b7280"
+ACCENT = "#0d9d80"          # 主强调：深青（主按钮底 / 描边 / 激活态）
+ACCENT_HOVER = "#0b8a70"
+SECONDARY = "#eef1f4"       # 中性按钮底
+SECONDARY_HOVER = "#dfe6ec"
+OK = "#0d9d80"
+WARN = "#9a6b00"
+BAD = "#e5484d"
+DANGER = "#e5484d"          # 危险描边按钮用
+DANGER_HOVER = "#fdecec"    # 危险描边按钮悬停底
+BADGE_BUILTIN_BG = "#eef2f5"
+BADGE_CUSTOM_BG = "#e8f6f1"
+ERR_BORDER = "#e5484d"
 
 # ---- 按钮禁用态与行内间距 ----
-# 禁用态：底色比正常态更暗、文字低对比，让「不可点」一目了然，
-# 而不是仅靠 Tk 默认的灰字（在深色主题下几乎看不出差别）。
-BTN_DISABLED_BG = "#2b2b2c"
-BTN_DISABLED_FG = "#5c5c5e"
+# 禁用态：浅灰底 + 低对比文字，让「不可点」一目了然。
+BTN_DISABLED_BG = "#f1f3f5"
+BTN_DISABLED_FG = "#a6aeb7"
 BTN_GAP = 8          # 同一行相邻按钮之间的水平间距（像素）
 
 DOT_SIZE = 18
-DOT_OFF_RING = "#5f6470"
-DOT_ON_RING = "#4ec9b0"
-DOT_ON_FILL = "#4ec9b0"
+DOT_OFF_RING = "#c3cbd3"    # 浅色下用浅灰环，保证未选中态可见但不抢眼
+DOT_ON_RING = "#0d9d80"
+DOT_ON_FILL = "#0d9d80"
 
 LABEL_FONT = ("Microsoft YaHei", 10)
 TITLE_FONT = ("Microsoft YaHei", 13, "bold")
@@ -95,7 +94,7 @@ def _mk_entry(parent, font=None):
     # width=1：让输入框只请求最小宽度，实际宽度交给 grid 的 sticky+weight 分配。
     # 否则 Entry 会按默认字符数要一大块地方，把右栏挤出窗口（实测过）。
     return tk.Entry(parent, width=1, bg=PANEL, fg=TEXT,
-                    insertbackground="#aeafad", relief="solid",
+                    insertbackground="#1f2329", relief="solid",
                     borderwidth=1, highlightthickness=1,
                     highlightbackground=BORDER, highlightcolor=ACCENT,
                     font=font or LABEL_FONT)
@@ -136,16 +135,23 @@ def _mk_btn(parent, text, cmd, kind="secondary", width=None, pad=10):
     调色板记在控件属性上，供状态切换时复原。
     """
     palette = {
-        "primary": (ACCENT, "#ffffff", ACCENT_HOVER),
-        "secondary": (SECONDARY, TEXT, SECONDARY_HOVER),
-        "danger": (DANGER, "#ffffff", DANGER_HOVER),
+        "primary": (ACCENT, "#ffffff", ACCENT_HOVER, None),
+        "secondary": (SECONDARY, TEXT, SECONDARY_HOVER, None),
+        "danger": (DANGER, "#ffffff", "#c7363c", None),
+        # 描边按钮：白底 + 彩色细边框 + 彩色文字（浅色主题下的次级/危险动作）
+        "outline": (PANEL, ACCENT, ACTIVE_BG, ACCENT),
+        "danger_outline": (PANEL, DANGER, DANGER_HOVER, DANGER),
     }
-    bg, fg, hover = palette.get(kind, palette["secondary"])
+    bg, fg, hover, outline = palette.get(kind, palette["secondary"])
     btn = tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
                     activebackground=hover, activeforeground=fg,
                     disabledforeground=BTN_DISABLED_FG,
                     relief="flat", bd=0, cursor="hand2", font=LABEL_FONT,
                     padx=pad, pady=5)
+    if outline:
+        # highlight 描边环：常驻显示（focus 与否都画），实现 1px 彩色边框
+        btn.configure(highlightthickness=1, highlightbackground=outline,
+                      highlightcolor=outline)
     if width:
         btn.configure(width=width)
 
@@ -274,7 +280,7 @@ class _Editor:
         header = tk.Frame(self.root, bg=PANEL)
         header.pack(fill="x")
         tk.Frame(header, bg=ACCENT, width=4).pack(side="left", fill="y")
-        tk.Label(header, text="设置", bg=PANEL, fg="#ffffff",
+        tk.Label(header, text="✦ 提示词工作室", bg=PANEL, fg=TEXT,
                  font=TITLE_FONT, padx=12, pady=10).pack(side="left")
 
         # 页签（自绘，保持一致深色风格）
@@ -482,6 +488,15 @@ class _Editor:
         bar = tk.Frame(left, bg=BG)
         bar.pack(fill="x", pady=(0, 6))
         _mk_btn(bar, "+ 新增提示词", self._on_prompt_new, "primary").pack(side="left")
+        # 搜索框：按名称 / 说明 / 内容过滤下方卡片
+        self.p_search_var = tk.StringVar(master=self.root)
+        self.p_search = _mk_entry(left, font=SMALL_FONT)
+        self.p_search.pack(fill="x", pady=(0, 6), ipady=3)
+        self.p_search_var.trace_add(
+            "write", lambda *_: self._render_prompt_list(
+                getattr(self, "_prompts_cache", []),
+                getattr(self, "_active_id_cache", None),
+                self.p_search_var.get()))
         self.plist = _ScrollList(left)
         self.plist.outer.pack(fill="both", expand=True)
 
@@ -506,7 +521,7 @@ class _Editor:
         _mk_label(right, "提示词内容（角色与风格设定）", MUTED, SMALL_FONT).grid(
             row=5, column=0, sticky="ew")
         self.p_content = tk.Text(right, height=10, width=1, bg=BG, fg=TEXT,
-                                 insertbackground="#aeafad", relief="solid",
+                                 insertbackground="#1f2329", relief="solid",
                                  borderwidth=1, highlightthickness=1,
                                  highlightbackground=BORDER,
                                  font=self.editor_font, wrap="word",
@@ -515,35 +530,57 @@ class _Editor:
                                  selectforeground="#ffffff")
         self.p_content.grid(row=6, column=0, sticky="nsew", pady=(2, 4))
         right.rowconfigure(6, weight=1)
+        self.p_content.bind("<KeyRelease>", lambda _e: self._update_char_count(),
+                            add="+")
+
+        # 变量 chips + 字数统计：chips 点击插入到光标处；
+        # {{草稿}}/{{上下文}} 是排版锚点（提示词内的指代写法），草稿与上下文
+        # 由程序自动附在提示词之后发送，见 p_hint 说明。
+        chips = tk.Frame(right, bg=PANEL)
+        chips.grid(row=7, column=0, sticky="ew", pady=(0, 4))
+        for var in ("{{草稿}}", "{{上下文}}"):
+            _mk_btn(chips, var,
+                    lambda v=var: self.p_content.insert("insert", v),
+                    "outline", pad=8).pack(side="left", padx=(0, 8))
+        self.p_count = tk.Label(chips, text="0 / 2000 字符", bg=PANEL,
+                                fg=MUTED, font=SMALL_FONT)
+        self.p_count.pack(side="right")
 
         self.p_hint = tk.Label(right,
                                text="该内容会作为 system 提示词发给大模型；"
+                                    "草稿与上下文由程序自动附在提示词之后，"
+                                    "{{草稿}}/{{上下文}} 只是在提示词里指代它们。"
                                     "只有被设为「生效」的那一条才会真正使用。",
                                bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="w",
                                justify="left", wraplength=300)
-        self.p_hint.grid(row=7, column=0, sticky="ew", pady=(0, 8))
+        self.p_hint.grid(row=8, column=0, sticky="ew", pady=(0, 8))
 
-        # 操作按钮：一行四个，等宽等距、随右栏宽度自适应收缩（不再换行）。
-        # 顺序自左到右为「破坏性 → 辅助 → 主要动作」，保存/生效靠右更顺手。
-        (self.btn_p_delete, self.btn_p_reset,
+        # 操作按钮：一行五个，等宽等距、随右栏宽度自适应收缩。
+        # 顺序自左到右为「破坏性 → 辅助 → 主要动作」，保存靠右更顺手。
+        (self.btn_p_delete, self.btn_p_reset, self.btn_p_trial,
          self.btn_p_activate, self.btn_p_save) = _mk_btn_row(
             right,
-            [("删除", self._on_prompt_delete, "danger"),
+            [("删除", self._on_prompt_delete, "danger_outline"),
              ("恢复默认", self._on_prompt_reset, "secondary"),
+             ("试运行", self._on_prompt_trial, "outline"),
              ("设为生效", self._on_prompt_activate, "secondary"),
              ("保存", self._on_prompt_save, "primary")],
-            row=8)
+            row=9)
 
     def _reload_prompts(self, keep_id=None):
         prompts = config.get_prompts()
         active_id = config.get_active_prompt_id()
+        self._prompts_cache = prompts          # 搜索过滤用
+        self._active_id_cache = active_id
         self.prompt_status.configure(
             text=f"当前生效：{self._name_of_prompt(active_id)}"
                  f"　｜　共 {len(prompts)} 条"
                  f"（内置 {sum(1 for p in prompts if p.get('builtin'))}"
                  f" / 自定义 {sum(1 for p in prompts if not p.get('builtin'))}）",
             fg=OK)
-        self._render_prompt_list(prompts, active_id)
+        self._render_prompt_list(prompts, active_id,
+                                 self.p_search_var.get()
+                                 if hasattr(self, "p_search_var") else "")
 
         target = keep_id or self._prompt_id or active_id
         ids = [p.get("id") for p in prompts]
@@ -555,15 +592,30 @@ class _Editor:
                 return p.get("name", "未命名")
         return "—"
 
-    def _render_prompt_list(self, prompts, active_id):
+    def _render_prompt_list(self, prompts, active_id, keyword=""):
         self.plist.clear()
         self._prompt_rows = []
-        if not prompts:
-            _mk_label(self.plist.inner, "（还没有任何提示词）", MUTED,
-                      SMALL_FONT).pack(padx=10, pady=10)
+        kw = (keyword or "").strip().lower()
+        shown = [p for p in prompts
+                 if not kw or kw in (p.get("name", "") + " "
+                                     + p.get("desc", "") + " "
+                                     + p.get("content", "")).lower()]
+        if not shown:
+            _mk_label(self.plist.inner,
+                      "（没有匹配的提示词，换个关键词试试）" if kw
+                      else "（还没有任何提示词）",
+                      MUTED, SMALL_FONT).pack(padx=10, pady=10)
             return
-        for p in prompts:
+        for p in shown:
             self._make_prompt_row(p, active_id)
+
+    def _update_char_count(self):
+        """编辑区字数统计（仅展示，不限流）。"""
+        try:
+            n = len(self.p_content.get("1.0", "end-1c"))
+            self.p_count.configure(text=f"{n} / 2000 字符")
+        except Exception:
+            pass
 
     def _make_prompt_row(self, p, active_id):
         pid = p.get("id", "")
@@ -642,6 +694,7 @@ class _Editor:
             self.p_content.delete("1.0", "end")
             self._clear_field_errors()
             self._sync_prompt_buttons()
+            self._update_char_count()
             return
         builtin = "（内置）" if p.get("builtin") else ""
         self.p_form_title.configure(text=f"编辑提示词{builtin}")
@@ -653,12 +706,14 @@ class _Editor:
         self.p_content.insert("1.0", p.get("content", ""))
         self._clear_field_errors()
         self._sync_prompt_buttons()
+        self._update_char_count()
 
     def _sync_prompt_buttons(self):
-        """按当前选中项刷新提示词页四个按钮的可用态。
+        """按当前选中项刷新提示词页五个按钮的可用态。
 
         - 删除：内置项不可删；新增模式（未选中）也没有可删对象。
         - 恢复默认：只对内置项才成立。
+        - 试运行：始终可用（用编辑器当前文本试跑）。
         - 设为生效：本就是生效项、或尚未保存时都无需再点。
         - 保存：始终可用（新增与修改都靠它落盘）。
         这样用户从按钮的明暗就能直接看出「这一步能不能做」，
@@ -749,6 +804,168 @@ class _Editor:
         self._reload_prompts(keep_id=pid)
         self._flash(f"已切换生效提示词：{self._name_of_prompt(pid)}", "ok")
 
+    # ================= 试运行 =================
+
+    def _on_prompt_trial(self):
+        """试运行当前编辑器里的提示词（即使还没点保存）。
+
+        用编辑器当前文本临时替换配置中的对应项，调 ai_client.polish；
+        未保存的新增模式则挂一个临时 id。网络请求走后台线程，
+        结果通过 root.after 回到 UI 线程展示（tkinter 线程规则）。
+        """
+        content = self.p_content.get("1.0", "end").strip()
+        name = self.p_name.get().strip() or "未命名"
+        if not content:
+            self._flash("请先填写提示词内容再试运行", "warn")
+            return
+        self._open_trial_dialog(name, content)
+
+    def _open_trial_dialog(self, name, content):
+        top = tk.Toplevel(self.root)
+        top.title(f"试运行：{name}")
+        top.configure(bg=BG)
+        top.geometry("680x520")
+        top.minsize(560, 420)
+        try:
+            top.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        header = tk.Frame(top, bg=PANEL)
+        header.pack(fill="x")
+        tk.Frame(header, bg=ACCENT, width=4).pack(side="left", fill="y")
+        tk.Label(header, text=f"✦ 试运行：{name}", bg=PANEL, fg=TEXT,
+                 font=TITLE_FONT, padx=12, pady=10).pack(side="left")
+        tk.Label(header, text="用当前编辑器文本试跑，不影响已保存内容",
+                 bg=PANEL, fg=MUTED, font=SMALL_FONT, padx=12).pack(side="right")
+
+        body = tk.Frame(top, bg=BG, padx=14, pady=10)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(3, weight=1)
+
+        _mk_label(body, "示例草稿（模拟微信输入框里的内容）",
+                  MUTED, SMALL_FONT).grid(row=0, column=0, sticky="ew")
+        _mk_label(body, "示例上下文（模拟对方最近发言，可空）",
+                  MUTED, SMALL_FONT).grid(row=0, column=1, sticky="ew",
+                                          padx=(8, 0))
+        draft_txt = tk.Text(body, height=5, width=1, bg=PANEL, fg=TEXT,
+                            insertbackground="#1f2329", relief="solid",
+                            borderwidth=1, highlightthickness=1,
+                            highlightbackground=BORDER,
+                            highlightcolor=ACCENT,
+                            font=self.editor_font, wrap="word", padx=8, pady=6)
+        draft_txt.grid(row=1, column=0, sticky="nsew", pady=(2, 8))
+        ctx_txt = tk.Text(body, height=5, width=1, bg=PANEL, fg=TEXT,
+                          insertbackground="#1f2329", relief="solid",
+                          borderwidth=1, highlightthickness=1,
+                          highlightbackground=BORDER,
+                          highlightcolor=ACCENT,
+                          font=self.editor_font, wrap="word", padx=8, pady=6)
+        ctx_txt.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(2, 8))
+        draft_txt.insert("1.0", "不好意思，这个需求可能要延期两天")
+
+        btn_bar = tk.Frame(body, bg=BG)
+        btn_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        run_btn = _mk_btn(btn_bar, "▶ 运行", None, "primary")
+        run_btn.pack(side="left")
+        _mk_btn(btn_bar, "关闭", top.destroy, "secondary").pack(
+            side="left", padx=(8, 0))
+        status = tk.Label(btn_bar, text="", bg=BG, fg=MUTED, font=SMALL_FONT)
+        status.pack(side="left", padx=(12, 0))
+
+        _mk_label(body, "运行结果", MUTED, SMALL_FONT).grid(
+            row=3, column=0, columnspan=2, sticky="ew")
+        result = tk.Text(body, width=1, bg=PANEL, fg=TEXT, relief="solid",
+                         borderwidth=1, highlightthickness=1,
+                         highlightbackground=BORDER,
+                         font=self.editor_font, wrap="word", padx=8, pady=6,
+                         state="disabled")
+        result.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(2, 0))
+
+        state = {"running": False, "dead": False}
+        top.bind("<Destroy>",
+                 lambda e: state.update(dead=True)
+                 if str(e.widget) == str(top) else None)
+
+        def _show_result(text, kind="info"):
+            try:
+                result.configure(state="normal")
+                result.delete("1.0", "end")
+                result.insert("1.0", text)
+                result.configure(state="disabled",
+                                 fg=BAD if kind == "err" else TEXT)
+                status.configure(text="")
+            except Exception:
+                pass
+
+        def _on_done(ok, payload):
+            state["running"] = False
+            try:
+                run_btn.configure(text="▶ 运行")
+                _set_btn_enabled(run_btn, True)
+            except Exception:
+                pass
+            if state["dead"]:
+                return
+            if ok:
+                lines = []
+                for i, v in enumerate(payload, 1):
+                    lines.append(f"—— 版本 {i} ——\n{v.strip()}")
+                _show_result("\n\n".join(lines) if lines else "（无结果）")
+                self._flash("试运行完成", "ok")
+            else:
+                _show_result(f"运行失败：\n{payload}", "err")
+                self._flash("试运行失败，见对话框内提示", "err")
+
+        def _run():
+            if state["running"]:
+                return
+            draft = draft_txt.get("1.0", "end").strip()
+            ctx = ctx_txt.get("1.0", "end").strip()
+            if not draft and not ctx:
+                status.configure(text="请至少填写示例草稿或上下文", fg=WARN)
+                return
+            state["running"] = True
+            run_btn.configure(text="运行中…")
+            _set_btn_enabled(run_btn, False)
+            status.configure(text="正在请求大模型…", fg=MUTED)
+
+            # 构造试运行配置：编辑器当前文本临时替换对应提示词
+            import copy
+            from config import load_config
+            cfg = copy.deepcopy(load_config())
+            prompts = cfg.get("prompts") or []
+            pid = self._prompt_id
+            if pid and any(p.get("id") == pid for p in prompts):
+                for p in prompts:
+                    if p.get("id") == pid:
+                        p["content"] = content
+            else:
+                prompts.append({"id": "__trial__", "name": name,
+                                "content": content, "builtin": False})
+                cfg["active_prompt_id"] = "__trial__"
+            cfg["prompts"] = prompts
+
+            def worker():
+                try:
+                    from ai_client import polish
+                    versions = polish(draft, ctx, cfg)
+                    done = (True, versions)
+                except Exception as e:
+                    done = (False, str(e).splitlines()[0][:300] if str(e)
+                            else "未知错误")
+                try:
+                    self.root.after(0, lambda: _on_done(*done))
+                except Exception:
+                    pass
+
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+        run_btn.configure(command=_run)
+
     # ================= 模型与 Key 页签 =================
 
     def _build_models_tab(self):
@@ -807,7 +1024,7 @@ class _Editor:
         self.key_hint.pack(side="right")
 
         self.m_key = tk.Entry(right, bg=PANEL, fg=TEXT,
-                              insertbackground="#aeafad", relief="solid",
+                              insertbackground="#1f2329", relief="solid",
                               borderwidth=1, highlightthickness=1,
                               highlightbackground=BORDER,
                               highlightcolor=ACCENT, font=MONO_FONT, show="•")
@@ -829,7 +1046,7 @@ class _Editor:
         (self.btn_m_delete, self.test_btn,
          self.btn_m_activate, self.btn_m_save) = _mk_btn_row(
             right,
-            [("删除", self._on_model_delete, "danger"),
+            [("删除", self._on_model_delete, "danger_outline"),
              ("测试连接", self._on_model_test, "secondary"),
              ("设为生效", self._on_model_activate, "secondary"),
              ("保存", self._on_model_save, "primary")],
@@ -1445,7 +1662,7 @@ def _show_qr_dialog(parent=None, asset=AUTHOR_QR_ASSET):
     header = tk.Frame(top, bg=PANEL)
     header.pack(fill="x")
     tk.Frame(header, bg=ACCENT, width=4).pack(side="left", fill="y")
-    tk.Label(header, text=title, bg=PANEL, fg="#ffffff",
+    tk.Label(header, text=title, bg=PANEL, fg=TEXT,
              font=TITLE_FONT, padx=12, pady=10).pack(side="left")
     tk.Label(header, text=subtitle, bg=PANEL, fg=MUTED,
              font=SMALL_FONT, padx=12).pack(side="right")
@@ -1628,7 +1845,7 @@ def open_editor(tab="author"):
     config.ensure_models_seeded()
 
     root = tk.Tk()
-    root.title("ai-reply-helper - 设置")
+    root.title("提示词工作室")
     root.configure(bg=BG)
 
     # 自适应：按屏幕尺寸给一个合适的初始大小，小屏也不会超出边界

@@ -86,8 +86,10 @@ DEFAULTS = {
     "capture_4x": "wgc",
     "log_prompt": False,         # 是否把发给大模型的完整提示词与响应原文写入日志（默认关闭：聊天原文是隐私敏感内容）
     "console_log": True,         # 是否在控制台窗口实时输出日志（run.bat 窗口可见）
-    "idle_gif": "1.webp",        # 右下角浮动动图：程序运行时显示
-    "active_gif": "2.webp",      # 按热键后显示；关闭润色弹窗后切回 idle_gif
+    "tray_idle_gif": "runrun-idle.webp",      # 右下角润润：待机
+    "tray_working_gif": "runrun-working.webp",  # 按热键 / 点击图标后
+    "tray_done_gif": "runrun-done.webp",        # 结果窗弹出（1.5s 后自动回待机）
+    "tray_error_gif": "runrun-error.webp",      # 抓取 / AI 失败（2s 后自动回待机）
     "tray_size": 220,            # 动图窗口边长（像素）
     "tray_pos": None,            # 动图上次拖动后的位置 [x, y]；None=默认右下角（越界会自动复位）
     "system_prompt": BUILTIN_PROMPTS[0]["content"],   # 兼容旧逻辑/回落值
