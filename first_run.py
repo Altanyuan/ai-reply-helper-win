@@ -8,7 +8,7 @@
   - 提供 DeepSeek 申请指引与免费额度说明，降低朋友的上手成本。
   - 「测试连接」用最小请求（max_tokens=1）验证 Key，几乎不产生费用。
   - 网络请求放在子线程，避免卡住 tkinter 界面。
-  - 配色沿用 config_editor.py 的 CodeBuddy 深色主题，视觉风格统一。
+  - 配色沿用 config_editor.py 的浅色清爽风，视觉风格统一。
 """
 import threading
 import tkinter as tk
@@ -16,19 +16,19 @@ import tkinter as tk
 import config
 from ai_client import test_api_key
 
-# ---- 配色（与 config_editor.py 保持一致）----
-BG = "#1e1e1e"
-PANEL = "#252526"
-BORDER = "#3c3c3c"
-TEXT = "#d4d4d4"
-MUTED = "#9da5b4"
-ACCENT = "#0e639c"
-ACCENT_HOVER = "#1177bb"
-SECONDARY = "#3a3d41"
-SECONDARY_HOVER = "#4a4d51"
-OK = "#4ec9b0"
-WARN = "#dcdcaa"
-BAD = "#f48771"
+# ---- 配色（与 config_editor.py 的浅色清爽风保持一致）----
+BG = "#f6f8f9"
+PANEL = "#ffffff"
+BORDER = "#e2e6ea"
+TEXT = "#1f2329"
+MUTED = "#6b7280"
+ACCENT = "#0d9d80"
+ACCENT_HOVER = "#0b8a70"
+SECONDARY = "#eef1f4"
+SECONDARY_HOVER = "#dfe6ec"
+OK = "#0d9d80"
+WARN = "#9a6b00"
+BAD = "#e5484d"
 
 LABEL_FONT = ("Microsoft YaHei", 10)
 TITLE_FONT = ("Microsoft YaHei", 13, "bold")
@@ -52,13 +52,13 @@ class _Wizard:
 
     # ---------- 布局 ----------
     def _build(self):
-        # 顶栏
-        header = tk.Frame(self.root, bg=PANEL, height=46)
+        # 顶栏（浅色：白底 + 左侧深青竖条 + 底部分隔线）
+        header = tk.Frame(self.root, bg=PANEL)
         header.pack(fill="x")
-        header.pack_propagate(False)
         tk.Frame(header, bg=ACCENT, width=4).pack(side="left", fill="y")
-        tk.Label(header, text="首次使用 · 配置 API Key", bg=PANEL, fg="#ffffff",
-                 font=TITLE_FONT, padx=12).pack(side="left")
+        tk.Label(header, text="✦ 首次使用 · 配置 API Key", bg=PANEL, fg=TEXT,
+                 font=TITLE_FONT, padx=12, pady=10).pack(side="left")
+        tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
 
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=20, pady=(16, 8))
@@ -98,7 +98,7 @@ class _Wizard:
                                    font=SMALL_FONT, cursor="hand2")
         self.key_toggle.pack(side="left", padx=(8, 0))
         self.key_toggle.bind("<Button-1>", lambda e: self._toggle_visible())
-        self.entry = tk.Entry(body, bg=PANEL, fg=TEXT, insertbackground="#aeafad",
+        self.entry = tk.Entry(body, bg=PANEL, fg=TEXT, insertbackground=TEXT,
                               relief="solid", borderwidth=1,
                               highlightbackground=BORDER, highlightthickness=1,
                               font=LABEL_FONT, show="•")
