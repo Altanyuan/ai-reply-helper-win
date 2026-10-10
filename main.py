@@ -34,7 +34,7 @@ _lock = threading.Lock()
 _config_lock = threading.Lock()  # 防止配置页重复打开
 
 # 版本标识：每次启动写入日志，便于确认跑的是修复版（run_ui 弹框路由）
-APP_VERSION = "2026-09-25-wgc-4x"
+APP_VERSION = "2026-10-10-dev"
 
 _LOCK_PATH = paths.lock_path()
 
@@ -418,7 +418,7 @@ def main():
         cfg = config.load_config()
         log.info("首次配置完成，已保存 API Key")
 
-    combo = _hotkey_to_pynput(cfg.get("hotkey", "ctrl+shift+space"))
+    combo = _hotkey_to_pynput(cfg.get("hotkey", "ctrl+alt+p"))
 
     # 启动时记录一次 OCR 可用性：微信 4.x 读聊天上下文依赖它，
     # 写进日志便于用户/开发者排查「读不到上下文」的原因（不影响主流程）。

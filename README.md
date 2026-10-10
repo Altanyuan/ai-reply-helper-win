@@ -43,7 +43,7 @@
 ## 安装
 
 ```bash
-cd wechat-ai-polish
+cd ai-reply-helper-win
 python -m pip install -r requirements.txt
 ```
 

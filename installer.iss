@@ -5,7 +5,7 @@
 #define MyAppName "ai-reply-helper"
 #define MyAppVersion "1.0"
 #define MyAppPublisher "WeChat AI Polish"
-#define MyAppExeName "ai-reply-helper.exe"
+#define MyAppExeName "微信AI润色助手.exe"
 #define MyAppDirName "ai-reply-helper"
 
 [Setup]

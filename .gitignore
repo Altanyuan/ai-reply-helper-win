@@ -1,7 +1,7 @@
 # ---- 敏感信息：含真实 API Key，绝不能进版本库 ----
 config.json
-config - *.json
 .env
+.env.*
 
 # ---- 构建产物 ----
 build/

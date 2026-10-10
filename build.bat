@@ -26,7 +26,7 @@ if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
     goto :fail
 )
-echo       OK: dist\WeChat AI Polish.exe (filename may contain Chinese chars)
+echo       OK: dist\微信AI润色助手.exe
 
 echo [3/3] Building installer with Inno Setup...
 rem ISCC is often missing from PATH (especially for per-user installs),

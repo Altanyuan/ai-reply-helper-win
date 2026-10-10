@@ -84,7 +84,7 @@ DEFAULTS = {
     #   wgc = WGC 窗口捕获 + 像素锚点定位（推荐：被遮挡也能截、不抢前台不打断打字、识别更准）
     #   ocr = 旧版截屏 OCR（需要窗口在前台且不被遮挡，留作回退）
     "capture_4x": "wgc",
-    "log_prompt": True,          # 是否把发给大模型的完整提示词与响应原文写入日志
+    "log_prompt": False,         # 是否把发给大模型的完整提示词与响应原文写入日志（默认关闭：聊天原文是隐私敏感内容）
     "console_log": True,         # 是否在控制台窗口实时输出日志（run.bat 窗口可见）
     "idle_gif": "1.webp",        # 右下角浮动动图：程序运行时显示
     "active_gif": "2.webp",      # 按热键后显示；关闭润色弹窗后切回 idle_gif
