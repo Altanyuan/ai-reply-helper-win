@@ -21,7 +21,6 @@ datas = [
     ("2.webp", "."),
     ("config.example.json", "."),
     ("author_qrcode.png", "."),   # 设置页「作者微信公众号」二维码
-    ("group_qrcode.png", "."),    # 设置页「使用交流群」二维码（有时效，过期换图即可）
 ]
 
 # PyInstaller 静态分析抓不到的隐式导入

@@ -466,7 +466,7 @@ def main():
     log.info(f"=== 启动 build={APP_VERSION}（弹框修复 run_ui 已启用），热键={combo} ===")
     print(f"[AI润色助手] 已启动 build={APP_VERSION}，热键 {combo}。在微信输入框打字后按热键即可润色。")
     print(f"[AI润色助手] 点击「鼠标中键（滚轮按下）」任意位置即可打开设置页"
-          f"（默认「软件作者」页，含交流群 / 公众号二维码）；Ctrl+C 退出。")
+          f"（默认「软件作者」页，含公众号二维码）；Ctrl+C 退出。")
 
     hotkeys = keyboard.GlobalHotKeys({combo: on_activate})
     hotkeys.start()

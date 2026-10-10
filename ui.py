@@ -152,14 +152,27 @@ def _header(root, title="ai-reply-helper"):
 
 
 def _scroll_area(root):
-    """返回可滚动的内部 Frame（放消息）。"""
+    """返回可滚动的内部 Frame（放消息）。
+
+    关键：inner 必须撑满 canvas 宽度（canvas <Configure> 时同步 inner 宽度），
+    否则消息行按内容宽度左对齐，右边会留一条空白带；同时 scrollregion
+    也要跟着更新，内容超高时滚动条才生效。
+    """
     canvas = tk.Canvas(root, bg=CHAT_BG, borderwidth=0,
                        highlightthickness=0)
     scroll = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
     inner = tk.Frame(canvas, bg=CHAT_BG)
-    inner.bind("<Configure>",
-               lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.create_window((0, 0), window=inner, anchor="nw")
+    win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def _on_inner_configure(e):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _on_canvas_configure(e):
+        canvas.itemconfig(win_id, width=e.width)
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    inner.bind("<Configure>", _on_inner_configure)
+    canvas.bind("<Configure>", _on_canvas_configure)
     canvas.configure(yscrollcommand=scroll.set)
     canvas.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
@@ -273,7 +286,7 @@ def show_choices(versions, on_choose, master=None, on_close=None):
     root = tk.Toplevel(master) if master is not None else tk.Tk()
     root.title("ai-reply-helper")
     root.attributes("-topmost", True)
-    root.geometry("430x540")
+    root.geometry("380x540")
     try:
         root.iconify()       # 防止闪烁，随后立刻恢复
         root.deiconify()

@@ -312,7 +312,7 @@ class _Editor:
         self.status.pack(side="left", fill="x", expand=True)
         _mk_btn(bottom, "关闭", self._on_close, "secondary", width=8).pack(
             side="right", padx=10, pady=5)
-        self._build_qr_entry(bottom)        # 「交流群 / 公众号」入口（在关闭左侧）
+        self._build_qr_entry(bottom)        # 「公众号」入口（在关闭左侧）
 
         # 内容区（占满底栏之外的剩余空间）
         self.body = tk.Frame(self.root, bg=BG)
@@ -361,7 +361,7 @@ class _Editor:
         elif tab == "models":
             self._on_model_save()
         else:
-            self._flash("「软件作者」页无需保存，扫码加入交流群 / 关注公众号即可",
+            self._flash("「软件作者」页无需保存，扫码关注公众号即可",
                         "info")
 
     def _on_close(self):
@@ -413,19 +413,15 @@ class _Editor:
                 pass
             self._flash_job = None
 
-    # ---------- 底栏二维码入口（作者公众号 / 使用交流群）----------
+    # ---------- 底栏二维码入口（作者公众号）----------
 
     def _build_qr_entry(self, parent):
         """底栏二维码入口：点击弹大图，悬停浮出小预览。
 
-        pack(side="right") 的顺序是「先入队的贴最右」，因此下面的书写顺序
-        （交流群 → 作者公众号）在界面上呈现为「作者微信公众号 ｜ 使用交流群 ｜ 关闭」。
-
         资源缺失的入口直接不创建 —— 与其留一个点了没反应的链接，
         不如干净地不显示（打包漏带图片时就是这种情况）。
         """
-        for asset, text in ((GROUP_QR_ASSET, "使用交流群"),
-                            (AUTHOR_QR_ASSET, "作者微信公众号")):
+        for asset, text in ((AUTHOR_QR_ASSET, "作者微信公众号"),):
             if not qr_available(asset):
                 continue
             link = tk.Label(parent, text=text, bg=PANEL, fg=MUTED,
@@ -1312,11 +1308,9 @@ class _Editor:
     # ================= 软件作者页签 =================
 
     def _build_author_tab(self):
-        """「软件作者」页：作者信息 + 使用交流群 / 作者公众号两张二维码卡片。
+        """「软件作者」页：作者信息 + 作者公众号二维码卡片。
 
-        布局沿用「提示词 / 模型与 Key」两页的两栏 grid 权重（左说明 / 右内容），
-        右栏再对半分成两张等宽卡片：每张各自持有白底二维码、独立按容器尺寸
-        重绘（都限制最大边长）。因此小屏能扫、大屏不糊，也不会把布局顶破。
+        布局沿用「提示词 / 模型与 Key」两页的两栏 grid 权重（左说明 / 右内容）。
         """
         wrap = tk.Frame(self.tab_author, bg=BG)
         wrap.pack(fill="both", expand=True)
@@ -1326,13 +1320,13 @@ class _Editor:
 
         # 状态条（与其它页签同一位置语义）
         self.author_status = tk.Label(
-            wrap, text="扫码加入使用交流群、关注作者公众号，获取更新与帮助",
+            wrap, text="扫码关注作者公众号，获取更新与帮助",
             bg=BG, fg=OK, font=LABEL_FONT, anchor="w", justify="left",
             wraplength=560)
         self.author_status.grid(row=0, column=0, columnspan=2, sticky="ew",
                                 padx=14, pady=(10, 6))
 
-        # ---- 左栏：作者信息 + 引导文案 + 两个入口按钮 ----
+        # ---- 左栏：作者信息 + 引导文案 + 入口按钮 ----
         left = tk.Frame(wrap, bg=PANEL, padx=16, pady=14)
         left.grid(row=1, column=0, sticky="nsew", padx=(14, 7), pady=(0, 12))
         left.columnconfigure(0, weight=1)
@@ -1348,12 +1342,9 @@ class _Editor:
         intro = tk.Label(
             left,
             text=(
-                "这个助手会持续更新与完善，作者会在这里发布新版本与说明。\n\n"
-                "想交流用法、反馈问题，欢迎扫码加入使用交流群：\n"
-                "· 与其它使用者交流使用技巧与经验\n"
-                "· 反馈问题、提出功能建议\n"
-                "· 第一时间获取新版本与更新说明\n\n"
-                "如果它帮到了你，也欢迎关注作者的公众号。"
+                "这个助手会持续更新与完善，作者会在公众号发布新版本与说明。\n\n"
+                "如果它帮到了你，欢迎扫码关注作者的公众号，"
+                "第一时间获取新版本与更新说明。"
             ),
             bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="nw", justify="left",
             wraplength=220,
@@ -1361,31 +1352,23 @@ class _Editor:
         intro.grid(row=2, column=0, sticky="new")
         _bind_wraplength(intro, left, pad=34)
 
-        # 两个入口按钮等宽一行；资源缺失的那个不进按钮行，
+        # 入口按钮；资源缺失时不进按钮行，
         # 避免留一个「点了没反应」的按钮。
         specs = []
-        if qr_available(GROUP_QR_ASSET):
-            specs.append(("加入交流群",
-                          lambda: self._open_qr(GROUP_QR_ASSET), "primary"))
         if qr_available(AUTHOR_QR_ASSET):
             specs.append(("作者公众号",
-                          lambda: self._open_qr(AUTHOR_QR_ASSET), "secondary"))
+                          lambda: self._open_qr(AUTHOR_QR_ASSET), "primary"))
         if specs:
             _mk_btn_row(left, specs, row=3, pady=(14, 0))
 
-        # ---- 右栏：两张二维码卡片（等宽并排）----
+        # ---- 右栏：作者公众号二维码卡片 ----
         right = tk.Frame(wrap, bg=BG)
         right.grid(row=1, column=1, sticky="nsew", padx=(7, 14), pady=(0, 12))
-        right.columnconfigure(0, weight=1, uniform="qrcard")
-        right.columnconfigure(1, weight=1, uniform="qrcard")
+        right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
 
         self._make_qr_card(
-            right, 0, GROUP_QR_ASSET, "使用交流群",
-            "微信扫码加入，交流用法、反馈问题。群二维码有时效（约 7 天），"
-            "过期请找作者重新获取。")
-        self._make_qr_card(
-            right, 1, AUTHOR_QR_ASSET, "作者微信公众号",
+            right, 0, AUTHOR_QR_ASSET, "作者微信公众号",
             "微信扫码关注，获取版本更新、使用帮助与更多实用小工具。")
 
     def _make_qr_card(self, parent, column, asset, title, desc):
@@ -1566,15 +1549,11 @@ class _Editor:
             pass
 
 
-# ================= 二维码资源（使用交流群 / 作者公众号）=================
+# ================= 二维码资源（作者公众号）=================
 
 AUTHOR_QR_ASSET = "author_qrcode.png"    # 作者微信公众号
-# 使用交流群：微信生成的群二维码自带有效期（约 7 天）。过期后只需用同名图片
-# 替换 group_qrcode.png（放程序目录的会优先于打包内置的那张），界面无需改动 ——
-# 文案里已提示用户「过期请找作者重新获取」。
-GROUP_QR_ASSET = "group_qrcode.png"
 AUTHOR_NAME = "地铁里的 AI 探员"          # 作者微信公众号名称（展示用）
-MAX_QR_SIDE = 300                        # 页内二维码最大边长（两张并排，比单张时略小）
+MAX_QR_SIDE = 300                        # 页内二维码最大边长
 _QR_CACHE = {}                           # asset -> PIL.Image（只缓存加载成功的）
 
 
@@ -1628,7 +1607,6 @@ def _fit_photo(pil, box_w, box_h, master=None):
 
 # 弹窗标题 / 副标题（按资源名区分；未登记的资源走默认文案）
 QR_DIALOG_META = {
-    GROUP_QR_ASSET: ("使用交流群", "微信扫码加入交流群"),
     AUTHOR_QR_ASSET: ("作者微信公众号", "微信扫一扫关注"),
 }
 
