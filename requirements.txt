@@ -7,7 +7,13 @@ Pillow>=10.0.0
 # 它硬依赖 opencv-python（会一起装上，打包体积 +约 45MB）；缺失时自动回落到截屏 OCR。
 windows-capture; sys_platform == "win32"
 
-# Windows 自带 OCR 的 Python 绑定（微信 4.x 读取聊天上下文必需；缺失时自动降级为无上下文润色）
+# 主 OCR：RapidOCR 本地 ONNX Runtime 推理。固定验证过的版本，避免打包/运行时漂移。
+rapidocr==3.4.1; sys_platform == "win32"
+onnxruntime==1.20.1; sys_platform == "win32"
+# RapidOCR 与 windows-capture 共用 OpenCV；固定已验证版本，避免安装到不兼容的新版本。
+opencv-python==4.11.0.86; sys_platform == "win32"
+
+# 回退 OCR：Windows 自带 OCR 的 Python 绑定（RapidOCR 不可用或无结果时使用）
 # 注意：必须用 winrt-* 分包。单体 winsdk / winrt 在 Python 3.13 上没有预编译 wheel，安装会失败。
 winrt-runtime; sys_platform == "win32"
 winrt-Windows.Media.Ocr; sys_platform == "win32"

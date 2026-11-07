@@ -1,4 +1,4 @@
-"""基于 Windows 内置 OCR 的聊天上下文读取（微信 4.x 专用兜底）。
+"""基于 RapidOCR / WinRT 的聊天上下文读取（微信 4.x 专用兜底）。
 
 背景（重要）：
   微信 4.0 起客户端用 Qt 重写，**完全不向 UI Automation 暴露内部控件** ——
@@ -12,16 +12,14 @@
   不依赖控件树。仅「读取聊天上下文」这一项需要 OCR 兜底。
 
 实现方式：
-  使用 Windows 10/11 内置的 WinRT OCR（``Windows.Media.Ocr``），
-  无需安装 Tesseract 等外部依赖，中文识别开箱即用。
-  Python 绑定采用新版分包 ``winrt-*``（Python 3.13 有预编译 wheel；
-  旧的 ``winsdk`` / 单体 ``winrt`` 在 3.13 上无法构建）。
-  任一依赖缺失时优雅降级（返回空字符串，不影响润色主流程）。
+  优先使用 RapidOCR（ONNX Runtime CPU）；引擎不可用、识别失败或无文本框时
+  回退到 Windows 10/11 内置 WinRT OCR（``Windows.Media.Ocr``）。
+  两个引擎均在本机处理截图，不上传聊天图像。任一依赖缺失时优雅降级。
 
 流程：
   截取微信窗口「客户区」（不含边框）
   → 等比裁剪出「聊天消息区」（避开左侧会话列表与底部输入框）
-  → WinRT OCR 识别 → 按词距重建每行 → 返回最近 n 条。
+  → RapidOCR 检测识别（失败时 WinRT 回退） → 说话人分类 → 返回可见消息。
 
 约束：
   截图仅在本机内存中处理，不落盘、不上传；日志只记录行数与区域尺寸，
@@ -29,6 +27,7 @@
 """
 import asyncio
 import logging
+import os
 import time
 
 log = logging.getLogger("polish")
@@ -43,6 +42,8 @@ _BACKEND_READY = None      # None=未探测 / True=可用 / False=不可用
 _IMPORT_ERROR = ""
 _ENGINE = None             # 已创建好的引擎（复用，避免每次识别重建）
 _ENGINE_LANG = ""          # 实际使用的识别语言标签
+_RAPID_ENGINE = None        # RapidOCR 引擎（惰性创建并复用）
+_RAPID_LOAD_ERROR = ""      # RapidOCR 导入或模型加载错误（缓存，避免每次重试）
 
 # 优先尝试的语言：聊天内容是中文，必须优先用中文引擎。
 # 踩坑记录：系统默认引擎是「用户配置语言」，实测为 en-US（英语），
@@ -138,14 +139,28 @@ def _load_backend():
 
 def ocr_available():
     """OCR 是否可用（供启动提示与配置校验）。"""
+    try:
+        import importlib.util
+        if importlib.util.find_spec("rapidocr") is not None:
+            return True
+    except Exception:
+        pass
     return _load_backend()
 
 
 def ocr_status_text():
     """返回给用户看的状态说明。"""
-    if _load_backend():
-        return f"OCR 可用（识别语言 {_ENGINE_LANG or '系统默认'}）"
-    return f"OCR 不可用：{_IMPORT_ERROR}"
+    try:
+        import importlib.util
+        rapid_installed = importlib.util.find_spec("rapidocr") is not None
+    except Exception:
+        rapid_installed = False
+    if rapid_installed:
+        return "OCR 可用（主引擎 RapidOCR；无结果时按需回退到 WinRT）"
+    winrt_ready = _load_backend()
+    if winrt_ready:
+        return f"OCR 可用（RapidOCR 未安装，将使用 WinRT 回退，识别语言 {_ENGINE_LANG or '系统默认'}）"
+    return f"OCR 不可用：RapidOCR 未安装；WinRT 回退失败：{_IMPORT_ERROR}"
 
 
 _DPI_AWARE_SET = False
@@ -425,6 +440,143 @@ def recognize_boxes(img):
         return []
 
 
+def _get_rapid_engine():
+    """惰性创建并复用 RapidOCR；初始化失败后缓存错误，交给 WinRT 回退。"""
+    global _RAPID_ENGINE, _RAPID_LOAD_ERROR
+
+    if _RAPID_ENGINE is not None:
+        return _RAPID_ENGINE
+    if _RAPID_LOAD_ERROR:
+        return None
+    try:
+        from rapidocr import RapidOCR
+
+        params = {
+            "EngineConfig.onnxruntime.intra_op_num_threads": 2,
+            "EngineConfig.onnxruntime.inter_op_num_threads": 2,
+        }
+        font_path = r"C:\Windows\Fonts\msyh.ttc"
+        if os.path.exists(font_path):
+            params["Global.font_path"] = font_path
+        _RAPID_ENGINE = RapidOCR(params=params)
+        log.info("OCR 主引擎就绪：RapidOCR（ONNX Runtime CPU）")
+        return _RAPID_ENGINE
+    except Exception as e:
+        _RAPID_LOAD_ERROR = f"{type(e).__name__}: {e}"
+        log.warning("RapidOCR 初始化失败，将回退到 WinRT OCR：%s", _RAPID_LOAD_ERROR)
+        return None
+
+
+def _recognize_boxes_rapid(img):
+    """RapidOCR 识别 PIL 图像，返回 [(文本, (x0, y0, x1, y1))]。"""
+    engine = _get_rapid_engine()
+    if engine is None:
+        return []
+    try:
+        import numpy as np
+
+        rgb = np.asarray(img.convert("RGB"))
+        # RapidOCR 将 numpy 图像按 OpenCV 约定解释为 BGR。
+        result = engine(rgb[:, :, ::-1].copy())
+        texts = list(result.txts) if result.txts is not None else []
+        polygons = list(result.boxes) if result.boxes is not None else []
+        out = []
+        for text, polygon in zip(texts, polygons):
+            if not text:
+                continue
+            points = np.asarray(polygon, dtype=float)
+            rect = (
+                max(0, int(np.floor(points[:, 0].min()))),
+                max(0, int(np.floor(points[:, 1].min()))),
+                min(img.width, int(np.ceil(points[:, 0].max()))),
+                min(img.height, int(np.ceil(points[:, 1].max()))),
+            )
+            if rect[2] > rect[0] and rect[3] > rect[1]:
+                out.append((str(text), rect))
+        out.sort(key=lambda item: (item[1][1], item[1][0]))
+        return out
+    except Exception as e:
+        log.warning("RapidOCR 识别失败，将回退到 WinRT OCR：%s: %s", type(e).__name__, e)
+        return []
+
+
+def recognize_boxes_scaled(img):
+    """Run RapidOCR first, then use WinRT only when RapidOCR gives no boxes.
+
+    Returned boxes use original-image coordinates for pixel-based speaker classification.
+    """
+    from PIL import Image, ImageEnhance
+
+    if not isinstance(img, Image.Image):
+        img = Image.fromarray(img)
+    img = img.convert("RGB")
+
+    # 2x is enough to enlarge small glyphs without doubling the OCR time again.
+    scale = max(1, min(2, 4096 // max(img.width, img.height)))
+    # Avoid strong sharpening, which can create false edges around thin Chinese
+    # strokes; grayscale plus mild contrast keeps the preprocessing restrained.
+    enlarged = ImageEnhance.Contrast(img.convert("L")).enhance(1.1).resize(
+        (img.width * scale, img.height * scale),
+        Image.Resampling.LANCZOS,
+    ).convert("RGB")
+    started = time.perf_counter()
+    enlarged_boxes = _recognize_boxes_rapid(enlarged)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    mapped = []
+    for text, rect in enlarged_boxes:
+        x0, y0, x1, y1 = rect
+        mapped_rect = (
+            max(0, min(img.width, round(x0 / scale))),
+            max(0, min(img.height, round(y0 / scale))),
+            max(0, min(img.width, round(x1 / scale))),
+            max(0, min(img.height, round(y1 / scale))),
+        )
+        if mapped_rect[2] > mapped_rect[0] and mapped_rect[3] > mapped_rect[1]:
+            mapped.append((text, mapped_rect))
+    mapped.sort(key=lambda item: (item[1][1], item[1][0]))
+    if mapped:
+        return mapped, f"RapidOCR {scale}x={len(mapped)}, elapsed={elapsed_ms:.0f}ms"
+
+    log.info("RapidOCR 未返回文本框，回退到 WinRT OCR")
+    fallback_boxes, fallback_info = recognize_boxes_winrt_scaled(img)
+    return fallback_boxes, f"RapidOCR 0, {fallback_info}"
+
+
+def recognize_boxes_winrt_scaled(img):
+    """用 WinRT 对同一图像按 2x 后备识别，坐标映射回原图。"""
+    from PIL import Image, ImageEnhance
+
+    if not isinstance(img, Image.Image):
+        img = Image.fromarray(img)
+    img = img.convert("RGB")
+    scale = max(1, min(2, 4096 // max(img.width, img.height)))
+    enlarged = ImageEnhance.Contrast(img.convert("L")).enhance(1.1).resize(
+        (img.width * scale, img.height * scale),
+        Image.Resampling.LANCZOS,
+    ).convert("RGB")
+    started = time.perf_counter()
+    boxes = recognize_boxes(enlarged)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if boxes:
+        mapped = []
+        for text, rect in boxes:
+            x0, y0, x1, y1 = rect
+            mapped.append((text, (
+                max(0, min(img.width, round(x0 / scale))),
+                max(0, min(img.height, round(y0 / scale))),
+                max(0, min(img.width, round(x1 / scale))),
+                max(0, min(img.height, round(y1 / scale))),
+            )))
+        mapped.sort(key=lambda item: (item[1][1], item[1][0]))
+        return mapped, f"WinRT {scale}x={len(mapped)}, elapsed={elapsed_ms:.0f}ms"
+
+    started = time.perf_counter()
+    native_boxes = recognize_boxes(img)
+    elapsed_ms += (time.perf_counter() - started) * 1000
+    return native_boxes, f"WinRT {scale}x=0 1x={len(native_boxes)}, elapsed={elapsed_ms:.0f}ms"
+
+
 def _recognize(img):
     """对 PIL.Image 做 OCR，返回按纵向排序的文本行列表（不带坐标）。失败返回 []。"""
     return [t for t, _ in recognize_boxes(img)]
@@ -503,45 +655,88 @@ def _is_cjk(ch):
     )
 
 
-def read_chat_context(hwnd, max_messages=6):
-    """OCR 读取微信聊天上下文。
+def read_chat_context(hwnd, max_messages=None):
+    """OCR 读取带说话人标签的微信聊天上下文。
 
     参数：
       hwnd: 微信主窗口句柄（用于截图定位）
-      max_messages: 最多返回多少条消息
+      max_messages: 可选的最多返回条数；None 表示返回全部识别到的消息
 
-    返回：字符串（换行分隔的最近消息）；失败或不可用返回 ""。
-    调用方应把空字符串视为「无上下文」，正常降级。
+    返回：标注「我 / 对方」的最近消息；无法可靠分类时返回 ""，不发送无标签文本。
     """
     if not hwnd:
         return ""
-    if not _load_backend():
-        return ""
-
     img = _grab_window_image(hwnd)
     if img is None:
         return ""
-    chat = _crop_chat_area(img)
-    lines = _recognize(chat)
-    if not lines:
-        log.info("OCR 未识别到聊天文本")
+    # 优先使用与 WGC 相同的像素锚点定位消息区。旧版固定比例裁剪会在
+    # 独立聊天窗、窗口缩放或布局变化时切掉消息，导致上下文只剩零碎文本。
+    import numpy as np
+    try:
+        import capture_wgc
+        full = np.asarray(img.convert("RGB"))
+        area = capture_wgc.chat_area(full)
+    except Exception as e:
+        log.warning(f"动态定位聊天区失败: {type(e).__name__}: {e}")
+        full = np.asarray(img.convert("RGB"))
+        area = None
+
+    pane_bg = None
+    if area is not None:
+        x0, y_top, x1, y_in, pane_bg = area
+        chat = full[y_top:y_in, x0:x1]
+        log.info(
+            "OCR 动态定位聊天区: 客户区 %dx%d → 区域 (%d,%d)-(%d,%d)",
+            full.shape[1], full.shape[0], x0, y_top, x1, y_in,
+        )
+    else:
+        # 锚点无法定位时保留旧裁剪作为尽力兜底，但仍要求后续分类出说话人。
+        chat_img = _crop_chat_area(img)
+        chat = np.asarray(chat_img.convert("RGB"))
+        log.warning("动态定位聊天区失败，使用旧比例裁剪；说话人分类仍为必需")
+
+    if chat.size == 0:
+        log.info("OCR 聊天区为空")
         return ""
 
-    # 过滤噪声行并去掉相邻重复
-    cleaned = []
-    for t in lines:
-        s = t.strip()
-        if not s:
-            continue
-        # 至少含一个字母/数字/汉字，否则判为图标或分隔线识别噪声
-        if not any(ch.isalnum() or '\u4e00' <= ch <= '\u9fff' for ch in s):
-            continue
-        if cleaned and cleaned[-1] == s:
-            continue
-        cleaned.append(s)
-
-    if not cleaned:
+    from PIL import Image
+    boxes, pass_info = recognize_boxes_scaled(Image.fromarray(chat))
+    log.info("OCR 增强识别: %s 文本框", pass_info)
+    if not boxes:
+        log.info("OCR 未识别到聊天文本框")
         return ""
-    picked = cleaned[-int(max_messages):]
-    log.info(f"OCR 读取到 {len(picked)} 条聊天上下文（共识别 {len(cleaned)} 行）")
-    return "\n".join(picked)
+
+    try:
+        msgs = capture_wgc.parse_messages(chat, boxes, pane_bg)
+    except Exception as e:
+        log.warning(f"OCR 说话人分类失败: {type(e).__name__}: {e}")
+        return ""
+    if not msgs and pass_info.startswith("RapidOCR ") and not pass_info.startswith("RapidOCR 0,"):
+        log.info("RapidOCR 文本框未形成聊天消息，回退到 WinRT OCR")
+        boxes, fallback_info = recognize_boxes_winrt_scaled(Image.fromarray(chat))
+        pass_info = f"RapidOCR 无消息；{fallback_info}"
+        log.info("OCR 回退识别: %s", pass_info)
+        if boxes:
+            try:
+                msgs = capture_wgc.parse_messages(chat, boxes, pane_bg)
+            except Exception as e:
+                log.warning(f"WinRT OCR 说话人分类失败: {type(e).__name__}: {e}")
+                return ""
+    if not msgs:
+        log.warning(
+            "OCR 识别到 %d 个文本框，但无法可靠分类说话人；忽略无标签上下文",
+            len(boxes),
+        )
+        return ""
+
+    if max_messages is None:
+        picked = msgs
+    else:
+        count = int(max_messages)
+        picked = msgs[-count:] if count > 0 else []
+    context = capture_wgc.format_context(picked)
+    log.info(
+        "OCR 读取到 %d 条带说话人标签的聊天上下文（识别 %d 个文本框）",
+        len(picked), len(boxes),
+    )
+    return context

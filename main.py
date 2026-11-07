@@ -15,7 +15,7 @@ import first_run
 import paths
 import wechat_window
 from capturer import capture_draft, read_wechat_recent, read_wechat_input
-from ai_client import polish
+from ai_client import has_speaker_labels, polish
 from paste_back import paste_back
 from ui import show_choices, show_error
 from tray_widget import make_tray
@@ -162,7 +162,6 @@ def _grab_wechat(cfg, timeout=10.0):
                             except Exception:
                                 pass
                             ctx = read_wechat_recent(
-                                int(cfg.get("context_messages", 5)),
                                 use_ocr=bool(cfg.get("ocr_context", True)),
                                 hwnd=hwnd,
                                 backend=cfg.get("capture_4x", "wgc"),
@@ -262,10 +261,24 @@ def _handle():
     context = grabbed["context"]
     draft = grabbed["draft"]   # 已 strip 的字符串
 
+    if context and not has_speaker_labels(context):
+        if not draft:
+            def _e_roles():
+                show_error(
+                    "读到了聊天文字，但无法确认哪些是对方发的，暂不自动草拟回复。\n\n"
+                    "请确认微信聊天内容可见后重试，或把对方最近的话粘进输入框。",
+                    master=tray.get_root() if tray else None,
+                    on_close=lambda: tray.show_idle() if tray else None,
+                )
+            run_ui(_e_roles)
+            return
+        log.warning("上下文缺少可靠的说话人标签；本次仅润色草稿，不使用上下文")
+        context = ""
+
     if not draft and not context.strip():
         def _e3():
             show_error(
-                "输入框为空，且没有读到聊天上下文，无法生成。\n\n"
+                "输入框为空，且没有读到可确认说话人的聊天上下文，无法生成。\n\n"
                 "请在微信输入框里写好草稿（哪怕几个关键词）再按热键；\n"
                 "若想结合聊天记录，请确认聊天窗口已打开且消息可见。\n\n"
                 "注：微信 4.x 界面不向系统暴露控件，程序改用「截屏识别」读取\n"

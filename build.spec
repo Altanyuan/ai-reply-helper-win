@@ -10,10 +10,10 @@
   - console=False：无控制台黑框。注意 main.py 已对 sys.stdout is None 做判空。
   - datas 只含「只读资源」，绝不包含 config.json（里面有作者的真实 Key）。
   - 私人场景配置 config - *.json 一律不打包。
-  - OCR（微信 4.x 读上下文）依赖 winrt-* 分包，且都是「函数内惰性导入」，
-    静态分析容易漏，故显式收集其子模块与原生库；未安装时只告警不报错。
+  - OCR 主引擎 RapidOCR 的模型资源与 ONNX Runtime 原生库，以及 WinRT 回退依赖，
+    都有惰性导入/动态资源，故显式收集，保证单文件 exe 内可用。
 """
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, collect_submodules
 
 # 打进 exe 的只读资源（相对本文件所在目录）
 datas = [
@@ -34,10 +34,18 @@ hiddenimports = [
     "capture_wgc",              # 微信 4.x 的 WGC 采集（capturer 内惰性 import）
 ]
 
-# 原生库（.pyd/.dll）——OCR 的 winrt 运行时必须随包，否则打包后 OCR 不可用
+# 原生库（.pyd/.dll）——RapidOCR、ONNX Runtime 与 WinRT OCR 运行时必须随包。
 binaries = []
+datas = list(datas)
 
-# Windows 内置 OCR 的 winrt 分包：子模块 + 原生库全部收集。
+# RapidOCR 模型、配置和 ONNX Runtime DLL；collect_all 同时收集动态子模块。
+for _pkg in ("rapidocr", "onnxruntime"):
+    _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
+    datas += _pkg_datas
+    binaries += _pkg_binaries
+    hiddenimports += _pkg_hiddenimports
+
+# Windows 内置 OCR 的 winrt 分包：作为 RapidOCR 无法识别时的回退，收集子模块 + 原生库。
 # 未安装这些包时，collect_* 只会告警并返回空列表，不会中断打包（走降级路径）。
 for _pkg in (
     "winrt",

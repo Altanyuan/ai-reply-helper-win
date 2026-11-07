@@ -21,9 +21,9 @@
   本模块只在 UIA 直读失败后才会被 `capturer.read_wechat_recent` 调用。
   微信 3.x 在第一步就命中并返回，**永远不会走到这里** —— 3.x 行为零变化。
 
-OCR 后端沿用项目现有的 Windows 内置 OCR（`ocr_reader`），不引入 RapidOCR：
-  WinRT 的 OcrWord 也带 bounding_rect，够做颜色分类；又是系统组件、已随包分发过，
-  中文引擎优先，能省下 onnxruntime + 模型那 60MB。
+OCR 由 `ocr_reader` 统一处理：
+  RapidOCR 作为主引擎，WinRT OCR 在主引擎不可用、识别无文本框或无法形成聊天消息时回退；
+  两个后端都返回文字框坐标，供本模块按气泡像素分类说话人。
 """
 from __future__ import annotations
 
@@ -75,7 +75,12 @@ def wgc_available() -> bool:
         import windows_capture  # noqa: F401
         return True
     except Exception as e:
-        log.info(f"WGC 不可用（{type(e).__name__}），4.x 采集将回落到截屏 OCR")
+        log.warning(
+            "WGC 不可用（%s: %s），4.x 采集将回落到带说话人分类的截屏 OCR；"
+            "源码运行请执行 python -m pip install -r requirements.txt，"
+            "打包版需在安装依赖后重新构建",
+            type(e).__name__, e,
+        )
         return False
 
 
@@ -296,7 +301,12 @@ def format_context(msgs):
         text = (text or "").strip()
         if not text:
             continue
-        lines.append(f"我：{text}" if who == "me" else f"{name or '对方'}：{text}")
+        if who == "me":
+            lines.append(f"我：{text}")
+        elif name:
+            lines.append(f"对方（{name}）：{text}")
+        else:
+            lines.append(f"对方：{text}")
     return "\n".join(lines)
 
 
@@ -424,8 +434,8 @@ def grab_frame(hwnd, timeout=GRAB_TIMEOUT):
     return full, area
 
 
-def read_recent(hwnd, n=5, timeout=GRAB_TIMEOUT):
-    """4.x 采集入口：WGC 抓帧 → 定位消息区 → OCR → 分类 → 取最近 n 条。
+def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
+    """4.x 采集入口：WGC 抓帧 → 定位消息区 → OCR → 分类 → 返回可见消息。
 
     返回 [(who, name, text)]；任何环节失败都返回 []（调用方据此回落下一级），
     不影响主流程。帧与中间图像全程在内存里，不落盘。
@@ -449,7 +459,7 @@ def read_recent(hwnd, n=5, timeout=GRAB_TIMEOUT):
 
     try:
         from PIL import Image
-        boxes = ocr_reader.recognize_boxes(Image.fromarray(crop))
+        boxes, pass_info = ocr_reader.recognize_boxes_scaled(Image.fromarray(crop))
     except Exception as e:
         log.warning(f"消息区 OCR 失败: {type(e).__name__}: {e}")
         return []
@@ -458,11 +468,26 @@ def read_recent(hwnd, n=5, timeout=GRAB_TIMEOUT):
         return []
 
     msgs = parse_messages(crop, boxes, pane_bg)
+    if not msgs and pass_info.startswith("RapidOCR ") and not pass_info.startswith("RapidOCR 0,"):
+        log.info("WGC 采集：RapidOCR 文本框未形成聊天消息，回退到 WinRT OCR")
+        boxes, fallback_info = ocr_reader.recognize_boxes_winrt_scaled(crop)
+        pass_info = f"RapidOCR 无消息；{fallback_info}"
+        if boxes:
+            msgs = parse_messages(crop, boxes, pane_bg)
     if not msgs:
         log.info(f"WGC 采集：识别到 {len(boxes)} 个文本框，但没有可用的消息")
         return []
-    picked = msgs[-int(n):]
-    log.info(f"WGC 采集：识别 {len(boxes)} 框 → {len(msgs)} 条消息，取最近 {len(picked)} 条")
+    if n is None:
+        picked = msgs
+        selection = f"全部传入 {len(picked)} 条"
+    else:
+        count = int(n)
+        picked = msgs[-count:] if count > 0 else []
+        selection = f"取最近 {len(picked)} 条"
+    log.info(
+        f"WGC 采集：{pass_info}；识别 {len(boxes)} 框 → {len(msgs)} 条消息，"
+        f"{selection}"
+    )
     return picked
 
 

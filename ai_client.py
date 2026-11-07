@@ -37,6 +37,8 @@ def build_messages(user_text, context, cfg, mode="polish"):
         ctx = context.strip()
         user_msg = (
             f"根据下面的对话上下文，替我起草 {n} 条可以直接发送的专业回复。\n"
+            f"上下文若包含“我：”，表示当前用户发出的消息；“对方：”或联系人名表示对方发出的消息。\n"
+            f"只回复最近一条对方消息，不要把“我”的话当成对方要求；若上下文没有说话人标签，避免假定发言者。\n"
             f"要求：贴合对方最近发言、事实准确、语气得体简洁、"
             f"版本之间风格有差异（如：稳妥推荐版 / 简短版 / 正式版 / 承接对方话术版）。\n"
             f"{extra}\n"
@@ -52,7 +54,7 @@ def build_messages(user_text, context, cfg, mode="polish"):
     ctx_block = ""
     if context and context.strip():
         ctx_block = (
-            "\n\n【对话上下文：对方最近发言，仅供参考，不要编造事实】\n"
+            "\n\n【对话上下文：消息可能来自双方；“我：”表示当前用户，“对方：”或联系人名表示其他人。不要把我的消息当成对方发言。】\n"
             + context.strip()
         )
     user_msg = (
@@ -69,6 +71,20 @@ def build_messages(user_text, context, cfg, mode="polish"):
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_msg},
     ]
+
+
+def has_speaker_labels(context):
+    """Whether context explicitly identifies its messages and at least one other-side message."""
+    lines = [line.strip() for line in (context or "").splitlines() if line.strip()]
+    has_other = any(
+        line.startswith("对方：") or line.startswith("对方（")
+        for line in lines
+    )
+    labeled = all(
+        line.startswith(("我：", "对方：", "对方（"))
+        for line in lines
+    )
+    return bool(lines) and labeled and has_other
 
 
 def _parse_versions(content, fallback_n=3):

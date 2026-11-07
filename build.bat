@@ -18,6 +18,23 @@ if errorlevel 1 (
     )
 )
 
+echo       Checking Windows Graphics Capture dependency...
+python -c "import windows_capture" >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] windows-capture is missing from this Python environment.
+    echo         Install project dependencies before building:
+    echo         python -m pip install -r requirements.txt
+    goto :fail
+)
+echo       Checking OCR engines...
+python -c "from rapidocr import RapidOCR; import onnxruntime" >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] RapidOCR or ONNX Runtime is missing from this Python environment.
+    echo         Install project dependencies before building:
+    echo         python -m pip install -r requirements.txt
+    goto :fail
+)
+
 echo [2/3] Building single-file exe with PyInstaller...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist

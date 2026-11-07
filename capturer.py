@@ -86,8 +86,8 @@ def capture_draft():
     return text.strip() if text else ""
 
 
-def read_wechat_recent(n=5, use_ocr=True, hwnd=None, backend="wgc"):
-    """尽力读取微信当前聊天窗口最近 n 条消息作为上下文。
+def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc"):
+    """尽力读取微信当前聊天窗口中可获取的消息作为上下文。
 
     **两条采集路径按「运行时能力探测」分流，互不干扰**（不解析微信版本号）：
 
@@ -103,12 +103,13 @@ def read_wechat_recent(n=5, use_ocr=True, hwnd=None, backend="wgc"):
     任何一级失败都只是降级（最终返回空字符串 = 无上下文润色），不影响主流程。
 
     参数：
-      n: 取最近多少条消息
+      n: 可选的最近消息数量；None 表示读取当前可获取的全部消息
       use_ocr: 是否允许 4.x 路径用 OCR 读上下文（配置项 ocr_context）
       hwnd: 微信主窗口句柄；缺省时自行定位
       backend: 4.x 的采集后端，'wgc'（默认）或 'ocr'（配置项 capture_4x）
     """
-    n = int(n)
+    if n is not None:
+        n = int(n)
     try:
         hwnd = hwnd or wechat_window.find_wechat_hwnd()
         if not hwnd:
@@ -175,7 +176,8 @@ def _read_via_uia(n):
             log.warning(f"读取消息列表子项失败: {e}")
             items = []
         texts = []
-        for it in items[-n:]:
+        picked_items = items if n is None else (items[-n:] if n > 0 else [])
+        for it in picked_items:
             t = wechat_window.node_text(it)
             if t:
                 texts.append(t)
@@ -196,7 +198,7 @@ def _read_via_uia(n):
     # 至少要有 2 段文本才认定「控件树确实暴露出内容」，
     # 避免把零星的界面标签当成聊天上下文。
     if len(dedup) >= 2:
-        picked = dedup[-n:]
+        picked = dedup if n is None else (dedup[-n:] if n > 0 else [])
         log.info(
             f"读取到 {len(picked)} 条聊天上下文（UIA 扁平模式，"
             f"遍历 {visited} 节点、收集 {len(dedup)} 段文本）"
@@ -236,7 +238,7 @@ def _read_via_wgc(hwnd, n):
 # ==================== 兜底：截屏 OCR（4.x 旧路径）====================
 
 def _read_via_screen_ocr(hwnd, n):
-    """旧版 4.x 采集：把窗口提到前台后截屏 + WinRT OCR。
+    """旧版 4.x 采集：把窗口提到前台后截屏 + OCR。
 
     保留为最后一级兜底（WGC 依赖缺失或抓帧失败时用）。它要求窗口在前台且不被遮挡，
     对窗口尺寸也更敏感 —— 能用 WGC 就不走这里。

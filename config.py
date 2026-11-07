@@ -76,7 +76,6 @@ DEFAULTS = {
     "api_key": "",
     "model": "deepseek-chat",
     "versions": 3,
-    "context_messages": 5,
     "hotkey": "ctrl+alt+p",
     "grab_timeout": 10,          # 触发后等待/重试获取微信内容的最长秒数，超时才弹提示框
     "ocr_context": True,         # 微信 4.x 不暴露 UIA 控件，是否允许用 OCR 读取聊天上下文（WGC/截屏两条后端都走它）

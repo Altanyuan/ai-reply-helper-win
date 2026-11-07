@@ -16,7 +16,6 @@
   "active_model_id": "m_default",
 
   "versions": 3,
-  "context_messages": 5,
   "hotkey": "ctrl+alt+p",
   "grab_timeout": 10,
   "ocr_context": true,
