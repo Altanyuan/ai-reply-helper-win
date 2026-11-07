@@ -383,6 +383,19 @@ def _build_choices(root, versions, on_choose, chat_name=None,
 
     root.bind("<MouseWheel>", scroll_wheel, add="+")
 
+    toast = tk.Label(root, text="", bg=INK_900, fg=SURFACE,
+                     font=("Segoe UI", 12), padx=12, pady=7,
+                     relief="flat", borderwidth=0)
+    toast_id = [None]
+
+    def show_toast(message):
+        if toast_id[0] is not None:
+            root.after_cancel(toast_id[0])
+        toast.configure(text=message)
+        toast.place(relx=0.5, rely=1.0, anchor="s", y=-42)
+        toast.lift()
+        toast_id[0] = root.after(1800, toast.place_forget)
+
     def choose(text):
         root.destroy()
         on_choose(text)
@@ -438,7 +451,7 @@ def _build_choices(root, versions, on_choose, chat_name=None,
         acts.pack(side="right")
 
         copy_btn = tk.Button(
-            acts, text="复制", command=lambda t=content: copy_text(t),
+            acts, text="复制", command=lambda t=content, n=index: copy_text(t, n),
             bg=SURFACE, fg=INK_700, activebackground=PAGE,
             relief="flat", borderwidth=1, highlightthickness=1,
             highlightbackground=LINE, highlightcolor=GREEN_600,
@@ -458,46 +471,66 @@ def _build_choices(root, versions, on_choose, chat_name=None,
         fill_buttons[index] = fill_btn
 
         expanded = [False]
-        line_count = [1]
 
         def toggle_expand():
             expanded[0] = not expanded[0]
-            body.configure(height=line_count[0] if expanded[0] else min(2, line_count[0]))
+            body.configure(height=line_count[0] if expanded[0] else 2)
             expand.configure(text="收起" if expanded[0] else "展开")
 
         expand.configure(command=toggle_expand)
+        line_count = [2]
 
         def sync_expand():
             try:
                 result = body.count("1.0", "end-1c", "displaylines")
                 lines = int(result[0]) if result else 1
             except (tk.TclError, TypeError, ValueError):
-                lines = max(1, (len(content) + 38) // 39)
+                lines = 2 if len(content) > 50 else 1
             line_count[0] = max(1, lines)
             if lines > 2:
                 body.configure(height=lines if expanded[0] else 2)
-                expand.configure(text="收起" if expanded[0] else "展开")
-                if not expand.winfo_manager():
-                    expand.pack(side="left")
             else:
                 expanded[0] = False
                 body.configure(height=max(1, lines))
+            expand.pack_forget()
+            if lines > 2:
+                expand.configure(text="收起" if expanded[0] else "展开")
+                expand.pack(side="left")
+            else:
                 expand.pack_forget()
 
         body.bind("<Configure>", lambda _e: root.after_idle(sync_expand), add="+")
         root.after_idle(sync_expand)
         return card
 
-    def copy_text(text):
+    def copy_text(text, index):
         try:
             pyperclip.copy(text)
         except Exception:
             return
+        show_toast(f"已复制第 {index} 条")
 
     for i, version in enumerate(versions, 1):
         make_card(i, str(version))
 
-    root.bind("<Escape>", lambda _e: root.destroy(), add="+")
+    def on_escape(_event=None):
+        if toast.winfo_ismapped():
+            toast.place_forget()
+            if toast_id[0] is not None:
+                root.after_cancel(toast_id[0])
+                toast_id[0] = None
+        else:
+            root.destroy()
+        return "break"
+
+    root.bind("<Escape>", on_escape, add="+")
+    for shortcut in "1234":
+        root.bind(
+            shortcut,
+            lambda _e, n=int(shortcut):
+                fill_buttons[n].invoke() if n in fill_buttons else None,
+            add="+",
+        )
     return inner
 
 
