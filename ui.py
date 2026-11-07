@@ -1,7 +1,7 @@
 """微信风格的回复建议弹窗（纯 tkinter 实现，不依赖 PIL/ImageTk）。
 
-show_choices(versions, on_choose, master=None, on_close=None)：展示多个 AI 回复建议，
-以蓝白色 AI 气泡与微信已发送消息区分；下方提供「复制 / 回填微信」；Esc 关闭。
+show_choices(versions, on_choose, master=None, on_close=None)：展示卡片式 AI 回复建议，
+保留「复制 / 回填微信」操作；Esc 关闭。
 - show_error(msg, master=None, on_close=None)：微信风格的错误提示卡。
 
 线程模型（关键）：
@@ -13,21 +13,36 @@ tray.run_ui() 路由到【主线程】执行，并以 Toplevel(master=托盘根)
 “Calling Tcl from different apartment” 并卡死 worker 线程的问题。
 """
 import tkinter as tk
+import tkinter.font as tkfont
 import pyperclip
 from PIL import Image, ImageTk
 from paths import asset
 
-# ---- 微信配色 ----
-CHAT_BG = "#ededed"          # 聊天区背景灰
-HEADER_BG = "#f7f7f7"        # 顶栏
-HEADER_LINE = "#d9d9d9"      # 顶栏分隔线
-GREEN = "#95EC69"            # 微信发出气泡绿
-WHITE = "#ffffff"            # 收到气泡白
-DRAFT_BG = "#e8f4ff"         # AI 回复建议浅蓝底，区别于已发送消息
-TEXT = "#1f1f1f"             # 正文
-MINE = "#07C160"             # 头像/发送按钮绿（微信绿）
-AI = "#10AEFF"               # AI 头像蓝
-BTN_GREY = "#e6e6e6"         # 复制按钮灰底
+# ---- 微信 AI 回复面板设计令牌 ----
+PAGE = "#F5F6F7"
+SURFACE = "#FFFFFF"
+INK_900 = "#16181D"
+INK_700 = "#3A4048"
+INK_500 = "#57606A"
+INK_400 = "#6E7681"
+LINE = "#E3E5E8"
+LINE_STRONG = "#CFD3D8"
+GREEN_600 = "#07883F"
+GREEN_700 = "#066B32"
+GREEN_50 = "#F0F9F3"
+GREEN_LINE = "#BFE0CC"
+
+# 旧错误提示仍使用聊天气泡，保留其既有配色常量。
+CHAT_BG = "#ededed"
+HEADER_BG = "#f7f7f7"
+HEADER_LINE = "#d9d9d9"
+GREEN = "#95EC69"
+WHITE = SURFACE
+DRAFT_BG = "#e8f4ff"
+TEXT = INK_900
+MINE = GREEN_600
+AI = "#10AEFF"
+BTN_GREY = "#f5f6f7"
 TITLE_FONT = ("Microsoft YaHei", 13, "bold")
 TEXT_FONT = ("Microsoft YaHei", 11)
 SYS_FONT = ("Microsoft YaHei", 10)
@@ -196,61 +211,265 @@ def _scroll_area(root):
     return inner, canvas
 
 
-def _build_choices(root, versions, on_choose):
-    """构建「多版本选择」弹窗内容。"""
+def _choices_header(root):
+    """轻量内容栏；窗口的关闭按钮由系统标题栏提供。"""
+    bar = tk.Frame(root, bg=SURFACE, height=38,
+                   highlightthickness=0)
+    bar.pack(fill="x")
+    bar.pack_propagate(False)
+    tk.Label(bar, text="AI 回复建议", bg=SURFACE, fg=INK_900,
+             font=("Segoe UI", 14, "bold"), anchor="w").pack(
+                 side="left", padx=12, fill="y")
+    more = tk.Menubutton(
+        bar, text="···", bg=SURFACE, fg=INK_400, relief="flat",
+        activebackground=PAGE, font=("Segoe UI", 14), cursor="hand2",
+        padx=8, takefocus=True, indicatoron=0,
+    )
+    menu = tk.Menu(more, tearoff=False, bg=SURFACE, fg=INK_700,
+                   activebackground=PAGE, activeforeground=INK_900,
+                   font=("Segoe UI", 11))
+    menu.add_command(label="快捷键：1–4 回填对应建议", state="disabled")
+    menu.add_command(label="Esc 关闭窗口", state="disabled")
+    menu.add_separator()
+    menu.add_command(label="关闭", command=root.destroy)
+    more.configure(menu=menu)
+    more.pack(side="right", padx=4, pady=3)
+    tk.Frame(root, bg=LINE, height=1).pack(fill="x")
+
+
+def _build_choices(root, versions, on_choose, chat_name=None,
+                   prompt_name=None, prompt_id=None, prompt_source="全局默认",
+                   prompts=None, on_prompt_change=None):
+    """构建卡片式回复建议面板。业务操作仍通过原回调执行。"""
     if not versions:
         return
 
-    _header(root, title="AI 回复建议")
-    inner, _canvas = _scroll_area(root)
+    root.configure(bg=SURFACE)
+    _choices_header(root)
 
-    # 顶部系统提示（微信灰色居中提示）
-    sys_tip = tk.Label(
-        inner, text="AI 已为你生成以下润色版本",
-        bg=CHAT_BG, fg="#9a9a9a", font=SYS_FONT,
+    # 联系人和本次提示词集中在一条固定工具栏中。
+    context = tk.Frame(root, bg=SURFACE, padx=12, pady=5)
+    context.pack(fill="x")
+    name = str(chat_name or "").strip() or "未识别"
+    chip = tk.Frame(context, bg=SURFACE, highlightthickness=1,
+                    highlightbackground=LINE, highlightcolor=GREEN_600)
+    chip.pack(side="left", padx=(0, 7), ipady=1)
+    chip.configure(width=96, height=22)
+    chip.pack_propagate(False)
+    initial = name[:1] if name and name != "未识别" else "·"
+    avatar = tk.Label(chip, text=initial, bg="#DCEFE4", fg="#256B47",
+                      font=("Segoe UI", 9, "bold"), width=2, height=1)
+    avatar.pack(side="left", padx=(3, 4), pady=2)
+    name_font = tkfont.Font(family="Segoe UI", size=12)
+    display_name = name
+    while display_name and name_font.measure(display_name) > 62:
+        display_name = display_name[:-1]
+    if display_name != name:
+        display_name = display_name[:-1] + "…" if display_name else "…"
+    tk.Label(chip, text=display_name, bg=SURFACE, fg=INK_700,
+             font=("Segoe UI", 12), anchor="w").pack(
+                 side="left", padx=(0, 7))
+
+    name_counts = {}
+    for prompt in prompts or []:
+        label = str(prompt.get("name") or "未命名提示词")
+        name_counts[label] = name_counts.get(label, 0) + 1
+    label_to_id = {}
+    id_to_label = {}
+    for prompt in prompts or []:
+        pid = prompt.get("id")
+        if not pid:
+            continue
+        label = str(prompt.get("name") or "未命名提示词")
+        if name_counts[label] > 1:
+            label += f"（{pid}）"
+        label_to_id[label] = pid
+        id_to_label[pid] = label
+
+    active_label = (id_to_label.get(prompt_id)
+                    or str(prompt_name or "全局默认"))
+    selected = tk.StringVar(master=root, value=active_label)
+    if label_to_id:
+        menu = tk.Menu(root, tearoff=False, bg=SURFACE, fg=INK_700,
+                       activebackground=PAGE, activeforeground=INK_900,
+                       font=("Segoe UI", 11))
+        for label in label_to_id:
+            menu.add_radiobutton(label=label, variable=selected, value=label)
+        prompt_picker = tk.Menubutton(
+            context, textvariable=selected, bg=SURFACE, fg=INK_700,
+            relief="flat", borderwidth=1, highlightthickness=1,
+            highlightbackground=LINE, highlightcolor=GREEN_600,
+            activebackground=PAGE, font=("Segoe UI", 12), cursor="hand2",
+            padx=7, pady=2, takefocus=True, menu=menu,
+        )
+    else:
+        prompt_picker = tk.Label(context, text=active_label, bg=SURFACE,
+                                 fg=INK_700, font=("Segoe UI", 12),
+                                 padx=7, pady=2)
+    regen = None
+    if on_prompt_change and label_to_id:
+        def regenerate():
+            next_id = label_to_id.get(selected.get())
+            if next_id:
+                root.destroy()
+                on_prompt_change(next_id)
+
+        regen = tk.Button(
+            context, text="↻", command=regenerate, bg=SURFACE, fg=INK_500,
+            relief="flat", borderwidth=0, activebackground=PAGE,
+            activeforeground=GREEN_700, font=("Segoe UI", 14),
+            width=2, height=1, cursor="hand2", takefocus=True,
+            highlightthickness=1, highlightbackground=LINE,
+            highlightcolor=GREEN_600,
+        )
+        regen.pack(side="right", padx=(7, 0))
+        regen.tooltip = "按所选提示词重新生成"
+    prompt_picker.pack(side="left", fill="x", expand=True)
+    tk.Frame(root, bg=LINE, height=1).pack(fill="x")
+
+    # 安全说明固定在列表外，滚动建议时始终可见。
+    hint = tk.Frame(root, bg=PAGE, height=24)
+    hint.pack(fill="x")
+    hint.pack_propagate(False)
+    tk.Label(hint, text="ⓘ", bg=PAGE, fg=GREEN_600,
+             font=("Segoe UI", 11, "bold")).pack(side="left", padx=(12, 5))
+    tk.Label(hint, text="回填仅写入微信输入框，不会自动发送",
+             bg=PAGE, fg=INK_500, font=("Segoe UI", 11),
+             anchor="w").pack(side="left", fill="y")
+    tk.Frame(root, bg=LINE, height=1).pack(fill="x")
+
+    # 底部状态栏固定显示建议数与当前提示词，不放操作按钮。
+    footer = tk.Frame(root, bg=SURFACE, height=34, padx=12,
+                      highlightthickness=0)
+    footer.pack(side="bottom", fill="x")
+    footer.pack_propagate(False)
+    source = f" · {prompt_source}" if prompt_source else ""
+    status = tk.Label(
+        footer,
+        text=f"{len(versions)} 条建议 · {prompt_name or '全局默认'}{source}",
+        bg=SURFACE, fg=INK_500, font=("Segoe UI", 11), anchor="w",
     )
-    sys_tip.pack(pady=(8, 2))
+    status.pack(fill="both", expand=True)
+    tk.Frame(root, bg=LINE, height=1).pack(side="bottom", fill="x")
+
+    # 可滚动卡片列表。
+    list_wrap = tk.Frame(root, bg=PAGE)
+    list_wrap.pack(fill="both", expand=True)
+    canvas = tk.Canvas(list_wrap, bg=PAGE, borderwidth=0,
+                       highlightthickness=0, takefocus=False)
+    scroll = tk.Scrollbar(
+        list_wrap, orient="vertical", command=canvas.yview, width=8,
+        bg=PAGE, troughcolor=PAGE, activebackground=LINE_STRONG,
+        relief="flat", borderwidth=0, highlightthickness=0,
+    )
+    inner = tk.Frame(canvas, bg=PAGE, padx=12, pady=8)
+    content_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=scroll.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    def update_scroll(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def fit_width(event):
+        canvas.itemconfigure(content_id, width=event.width)
+
+    inner.bind("<Configure>", update_scroll, add="+")
+    canvas.bind("<Configure>", fit_width, add="+")
+
+    def scroll_wheel(event):
+        canvas.yview_scroll(int(-event.delta / 120), "units")
+        return "break"
+
+    root.bind("<MouseWheel>", scroll_wheel, add="+")
 
     def choose(text):
         root.destroy()
         on_choose(text)
 
-    # AI 引导气泡（收到，白）
-    _add_message(
-        inner,
-        f"已生成 {len(versions)} 个建议。点击「回填微信」只会填入输入框，不会自动发送。",
-        side="left",
-    )
+    fill_buttons = {}
 
-    for i, v in enumerate(versions, 1):
-        tk.Label(
-            inner, text=f"AI 建议 {i}", bg=CHAT_BG, fg="#47718f",
-            font=SYS_FONT,
-        ).pack(anchor="w", padx=(58, 10), pady=(5, 0))
-        bf = _add_message(
-            inner, v, side="left", avatar_text="AI", bubble_fill=DRAFT_BG,
+    def make_card(index, content):
+        card = tk.Frame(inner, bg=SURFACE, highlightthickness=1,
+                        highlightbackground=LINE, highlightcolor=LINE_STRONG,
+                        padx=11, pady=8)
+        card.pack(fill="x", pady=(0, 8))
+
+        def on_card_enter(_event):
+            card.configure(highlightbackground=LINE_STRONG)
+
+        def on_card_leave(_event):
+            card.configure(highlightbackground=LINE)
+
+        card.bind("<Enter>", on_card_enter, add="+")
+        card.bind("<Leave>", on_card_leave, add="+")
+        top = tk.Frame(card, bg=SURFACE)
+        top.pack(fill="x", pady=(0, 5))
+        badge = tk.Label(top, text=str(index), bg="#EEF1F4", fg=INK_500,
+                         width=2, height=1, font=("Segoe UI", 10, "bold"))
+        badge.pack(side="left")
+        tk.Label(top, text=f"建议 {index}", bg=SURFACE, fg=INK_500,
+                 font=("Segoe UI", 11), anchor="w").pack(side="left", padx=6)
+        tk.Label(top, text=f"{len(content)} 字", bg=SURFACE, fg=INK_400,
+                 font=("Segoe UI", 11), anchor="e").pack(side="right")
+
+        body = tk.Text(
+            card, height=2, wrap="word", bg=SURFACE, fg=INK_900,
+            font=("Segoe UI", 14), relief="flat", borderwidth=0,
+            padx=0, pady=0, spacing1=1, spacing3=3, takefocus=False,
+            cursor="arrow", selectbackground="#CDE8D7",
         )
+        body.insert("1.0", content)
+        body.configure(state="disabled")
+        body.pack(fill="x", expand=False)
 
-        def _copy(t=v):
+        actions = tk.Frame(card, bg=SURFACE)
+        actions.pack(fill="x", pady=(7, 0))
+        acts = tk.Frame(actions, bg=SURFACE)
+        acts.pack(side="right")
+
+        copy_btn = tk.Button(
+            acts, text="复制", command=lambda t=content: copy_text(t),
+            bg=SURFACE, fg=INK_700, activebackground=PAGE,
+            relief="flat", borderwidth=1, highlightthickness=1,
+            highlightbackground=LINE, highlightcolor=GREEN_600,
+            font=("Segoe UI", 12), padx=9, pady=2, cursor="hand2",
+            takefocus=True,
+        )
+        copy_btn.pack(side="left", padx=(0, 6))
+        fill_btn = tk.Button(
+            acts, text="回填微信", command=lambda t=content: choose(t),
+            bg=GREEN_600, fg=SURFACE, activebackground=GREEN_700,
+            activeforeground=SURFACE, relief="flat", borderwidth=0,
+            highlightthickness=1, highlightbackground=GREEN_600,
+            highlightcolor=INK_900, font=("Segoe UI", 12, "bold"),
+            padx=10, pady=3, cursor="hand2", takefocus=True,
+        )
+        fill_btn.pack(side="left")
+        fill_buttons[index] = fill_btn
+
+        def fit_body():
             try:
-                pyperclip.copy(t)
-            except Exception:
-                pass
+                result = body.count("1.0", "end-1c", "displaylines")
+                lines = int(result[0]) if result else 1
+            except (tk.TclError, TypeError, ValueError):
+                lines = max(1, (len(content) + 38) // 39)
+            body.configure(height=max(1, lines))
 
-        def _fill(t=v):
-            choose(t)
+        body.bind("<Configure>", lambda _e: root.after_idle(fit_body), add="+")
+        root.after_idle(fit_body)
+        return card
 
-        btns = tk.Frame(bf, bg=CHAT_BG)
-        btns.pack(anchor="w", pady=(4, 0))
-        tk.Button(btns, text=f"复制", command=_copy, width=7,
-                  bg=BTN_GREY, fg="#222222", relief="flat",
-                  font=("Microsoft YaHei", 10)).pack(side="right", padx=2)
-        tk.Button(btns, text="回填微信", command=_fill, width=9,
-                  bg=MINE, fg="white", relief="flat",
-                  activebackground=MINE, font=("Microsoft YaHei", 10, "bold")
-                  ).pack(side="right", padx=2)
+    def copy_text(text):
+        try:
+            pyperclip.copy(text)
+        except Exception:
+            return
 
-    root.bind("<Escape>", lambda e: root.destroy())
+    for i, version in enumerate(versions, 1):
+        make_card(i, str(version))
+
+    root.bind("<Escape>", lambda _e: root.destroy(), add="+")
     return inner
 
 
@@ -291,7 +510,10 @@ def _wire_close(root, on_close):
     root.bind("<Destroy>", _on_destroy)
 
 
-def show_choices(versions, on_choose, master=None, on_close=None):
+def show_choices(versions, on_choose, master=None, on_close=None,
+                 chat_name=None, prompt_name=None, prompt_id=None,
+                 prompt_source="全局默认", prompts=None,
+                 on_prompt_change=None):
     """弹出置顶小窗，展示多个润色版本（微信聊天框风格）。
 
     on_choose(text): 用户点“回填微信”时回调；参数为选定文本，回调后窗口关闭。
@@ -302,9 +524,9 @@ def show_choices(versions, on_choose, master=None, on_close=None):
     if not versions:
         return
     root = tk.Toplevel(master) if master is not None else tk.Tk()
-    root.title("ai-reply-helper - 回复建议")
+    root.title("AI 回复建议")
     root.attributes("-topmost", True)
-    root.geometry("450x560")
+    root.geometry("448x640")
     root.minsize(400, 360)
     root.resizable(True, True)
     try:
@@ -312,13 +534,13 @@ def show_choices(versions, on_choose, master=None, on_close=None):
         root.deiconify()
     except Exception:
         pass
-    inner = _build_choices(root, versions, on_choose)
+    inner = _build_choices(
+        root, versions, on_choose, chat_name=chat_name,
+        prompt_name=prompt_name, prompt_id=prompt_id,
+        prompt_source=prompt_source, prompts=prompts,
+        on_prompt_change=on_prompt_change,
+    )
     root.update_idletasks()
-    # 根据建议文本长度扩展窗口；超过屏幕可用高度时保留滚动区域。
-    wanted_height = inner.winfo_reqheight() + 58
-    max_height = max(360, root.winfo_screenheight() - 90)
-    height = min(max(560, wanted_height), max_height)
-    root.geometry(f"450x{height}")
     _wire_close(root, on_close)
     if master is None:
         root.mainloop()
