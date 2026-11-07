@@ -14,8 +14,9 @@ import config
 import first_run
 import paths
 import wechat_window
-from capturer import capture_draft, read_wechat_recent, read_wechat_input
+from capturer import capture_draft, read_wechat_recent_with_title, read_wechat_input
 from ai_client import has_speaker_labels, polish
+from contact_rules import config_for_prompt, resolve_prompt_id
 from paste_back import paste_back
 from ui import show_choices, show_error
 from tray_widget import make_tray
@@ -161,7 +162,7 @@ def _grab_wechat(cfg, timeout=10.0):
                                 hwnd = int(win.NativeWindowHandle)
                             except Exception:
                                 pass
-                            ctx = read_wechat_recent(
+                            ctx, chat_name = read_wechat_recent_with_title(
                                 use_ocr=bool(cfg.get("ocr_context", True)),
                                 hwnd=hwnd,
                                 backend=cfg.get("capture_4x", "wgc"),
@@ -171,7 +172,8 @@ def _grab_wechat(cfg, timeout=10.0):
                                 # 内部已对“无微信”做闸门，不会误发键
                                 d = capture_draft()
                             result_q.put(
-                                {"context": ctx or "", "draft": (d or "").strip()}
+                                {"context": ctx or "", "draft": (d or "").strip(),
+                                 "chat_name": chat_name}
                             )
                             return
                     except Exception as e:
@@ -260,6 +262,7 @@ def _handle():
 
     context = grabbed["context"]
     draft = grabbed["draft"]   # 已 strip 的字符串
+    chat_name = grabbed.get("chat_name")
 
     if context and not has_speaker_labels(context):
         if not draft:
@@ -293,8 +296,20 @@ def _handle():
     mode = "根据上下文生成回复" if not draft else "润色草稿"
     log.info(f"草稿长度={len(draft)} 上下文长度={len(context)} 模式={mode}")
 
+    prompts = config.get_prompts()
+    default_prompt_id = config.get_active_prompt_id()
+    selected_prompt_id, route_reason = resolve_prompt_id(
+        chat_name, config.get_contact_rules(), prompts, default_prompt_id,
+    )
+    prompt_by_id = {p.get("id"): p for p in prompts if p.get("id")}
+    selected_prompt = prompt_by_id.get(selected_prompt_id) or config.get_active_prompt()
+    selected_prompt_id = selected_prompt.get("id", default_prompt_id)
+    run_cfg = config_for_prompt(cfg, selected_prompt_id)
+    selected_prompt_name = selected_prompt.get("name", "通用润色")
+    prompt_source = "联系人规则" if route_reason == "matched" else "全局默认"
+
     try:
-        versions = polish(draft, context, cfg)
+        versions = polish(draft, context, run_cfg)
     except Exception as e:
         log.exception(f"AI 调用失败: {e}")
         raw = str(e)
@@ -350,11 +365,48 @@ def _handle():
         threading.Thread(target=_paste, daemon=True).start()
 
     def _e6():
-        show_choices(
-            versions, choose,
-            master=tray.get_root() if tray else None,
-            on_close=lambda: tray.show_idle() if tray else None,
-        )
+        def show_result(current_versions, current_prompt_id,
+                        current_prompt_name, current_source):
+            def regenerate(prompt_id):
+                prompt = prompt_by_id.get(prompt_id)
+                if prompt is None:
+                    return
+                next_cfg = config_for_prompt(cfg, prompt_id)
+
+                def worker():
+                    try:
+                        next_versions = polish(draft, context, next_cfg)
+                        if not next_versions:
+                            raise RuntimeError("模型未返回可用回复")
+                    except Exception as exc:
+                        log.exception("本次手动切换提示词后重新生成失败")
+                        error_message = f"重新生成失败：{str(exc).splitlines()[0][:240]}"
+                        run_ui(lambda message=error_message: show_error(
+                            message,
+                            master=tray.get_root() if tray else None,
+                            on_close=lambda: tray.show_idle() if tray else None,
+                        ))
+                        return
+                    run_ui(lambda: show_result(
+                        next_versions, prompt_id, prompt.get("name", "提示词"),
+                        "本次手动选择",
+                    ))
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            show_choices(
+                current_versions, choose,
+                master=tray.get_root() if tray else None,
+                on_close=lambda: tray.show_idle() if tray else None,
+                chat_name=chat_name,
+                prompt_name=current_prompt_name,
+                prompt_id=current_prompt_id,
+                prompt_source=current_source,
+                prompts=prompts,
+                on_prompt_change=regenerate,
+            )
+
+        show_result(versions, selected_prompt_id, selected_prompt_name, prompt_source)
     run_ui(_e6)
     return
 

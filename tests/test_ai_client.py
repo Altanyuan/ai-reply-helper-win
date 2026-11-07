@@ -23,6 +23,15 @@ def test_build_messages_no_context():
     assert "对话上下文" not in msgs[1]["content"]
 
 
+def test_contact_title_and_rules_are_not_added_to_model_messages():
+    cfg = config.load_config()
+    cfg["chat_name"] = "王总-本地聊天标题"
+    cfg["contact_rules"] = [{"name": "王总-本地聊天标题", "prompt_id": "builtin_formal"}]
+    msgs = ai_client.build_messages("明天见", "", cfg)
+    joined = "\n".join(message["content"] for message in msgs)
+    assert "王总-本地聊天标题" not in joined
+
+
 def test_build_messages_reply_mode():
     cfg = config.load_config()
     msgs = ai_client.build_messages("", "对方：文件序号是多少", cfg, mode="reply")

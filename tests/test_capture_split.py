@@ -28,9 +28,9 @@ def _run(uia, wgc=None, ocr=None, backend="wgc", use_ocr=True):
         calls["uia"] += 1
         return uia
 
-    def _wgc(hwnd, n):
+    def _wgc_with_title(hwnd, n, include_messages=True):
         calls["wgc"] += 1
-        return wgc or ""
+        return ((wgc or "") if include_messages else ""), None
 
     def _ocr(hwnd, n):
         calls["ocr"] += 1
@@ -39,7 +39,8 @@ def _run(uia, wgc=None, ocr=None, backend="wgc", use_ocr=True):
     with patch.object(capturer.wechat_window, "find_wechat_hwnd", return_value=HWND), \
             patch.object(capturer.wechat_window, "wake_accessibility", return_value=None), \
             patch.object(capturer, "_read_via_uia", side_effect=_uia), \
-            patch.object(capturer, "_read_via_wgc", side_effect=_wgc), \
+            patch.object(capturer, "_read_via_wgc_with_title",
+                         side_effect=_wgc_with_title), \
             patch.object(capturer, "_read_via_screen_ocr", side_effect=_ocr):
         return capturer.read_wechat_recent(5, use_ocr=use_ocr, hwnd=HWND,
                                            backend=backend), calls
@@ -73,11 +74,11 @@ def test_backend_ocr_skips_wgc():
     assert calls == {"uia": 1, "wgc": 0, "ocr": 1}, calls
 
 
-def test_use_ocr_false_disables_all_4x_paths():
-    """关掉 ocr_context（use_ocr=False）：两条 4.x 路径都不走。"""
+def test_use_ocr_false_still_reads_title_but_skips_message_ocr():
+    """关掉 ocr_context 后仍可本地读取聊天标题，但不读取消息上下文。"""
     text, calls = _run(uia="", wgc="不该被调用", ocr="不该被调用", use_ocr=False)
     assert text == ""
-    assert calls == {"uia": 1, "wgc": 0, "ocr": 0}, calls
+    assert calls == {"uia": 1, "wgc": 1, "ocr": 0}, calls
 
 
 def test_no_window_returns_empty_without_touching_anything():

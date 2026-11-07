@@ -96,6 +96,7 @@ DEFAULTS = {
     # 提示词列表与当前生效项（首次打开配置页时由 ensure_prompts_seeded 写入）
     "prompts": [dict(p) for p in BUILTIN_PROMPTS],
     "active_prompt_id": BUILTIN_PROMPTS[0]["id"],
+    "contact_rules": [],         # 本机微信聊天显示名称 → 提示词 ID
 }
 
 
@@ -347,6 +348,32 @@ def reset_prompt(pid):
         update_config({"prompts": prompts})
         return True
     return False
+
+
+def get_contact_rules():
+    """返回本机联系人提示词规则的副本。"""
+    rules = load_config().get("contact_rules", [])
+    if not isinstance(rules, list):
+        return []
+    return [dict(rule) for rule in rules if isinstance(rule, dict)]
+
+
+def set_contact_rules(rules):
+    """保存联系人提示词规则到本机 config.json。"""
+    clean = []
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        name = str(rule.get("name") or "").strip()
+        prompt_id = str(rule.get("prompt_id") or "").strip()
+        if not name or not prompt_id:
+            continue
+        clean.append({
+            "id": str(rule.get("id") or _new_id()),
+            "name": name,
+            "prompt_id": prompt_id,
+        })
+    update_config({"contact_rules": clean})
 
 
 # ---------- 多模型配置（含 API Key 的加密存储）----------

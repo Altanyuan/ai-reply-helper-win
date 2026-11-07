@@ -63,6 +63,7 @@ _SEP_ROW = 0.1         # 分隔线所在行的底色占比要低于它
 _MIN_W, _MIN_H = 100, 40
 _HEADER_RATIO = 0.085  # 标题栏（含会话名）占客户区高度的比例（1920x1030 实测 86px）
 _HEADER_MIN, _HEADER_MAX = 40, 140
+_TITLE_OCR_MIN = 64   # 小窗口仍需覆盖微信标题文字的完整行高
 
 # 锚点定位失败时的兜底裁剪比例（沿用旧版本的实测标定，聊胜于无）
 _FALLBACK = (0.197, 0.083, 0.608, 0.474)   # left, top, right, bottom
@@ -191,6 +192,54 @@ def chat_area(full):
         if best is None or area[1] < best[1]:
             best = area
     return best
+
+
+def recognize_chat_header(full, area):
+    """实验性识别微信聊天顶部标题区域，返回 OCR 文本框和引擎信息。
+
+    只读取整帧顶部中央聊天面板，不包含消息区；暂不用于提示词切换。
+    标题栏范围按当前 WGC 帧高度估算，并限制在现有实测边界内。
+    """
+    if full is None or area is None:
+        return [], "无窗口帧或聊天区域"
+
+    x0, y_top, x1, _y_in, _pane_bg = area
+    height, width = full.shape[:2]
+    header_h = min(_HEADER_MAX, max(_TITLE_OCR_MIN, int(height * _HEADER_RATIO)))
+    x0 = max(0, min(int(x0), width))
+    x1 = max(x0, min(int(x1), width))
+    # WGC captures the non-client caption on windowed WeChat. In that mode
+    # the title row sits lower than the height estimate, so prefer the
+    # detected chat-area top (the bottom edge of the header), capped to avoid
+    # pulling message text into this OCR pass.
+    header_bottom = max(header_h, min(int(y_top), _HEADER_MAX))
+    y1 = max(0, min(header_bottom, height))
+    if x1 - x0 < 40 or y1 < 12:
+        return [], f"标题区域过小：{x1 - x0}x{y1}"
+
+    header = full[:y1, x0:x1]
+    try:
+        import ocr_reader
+        from PIL import Image
+
+        boxes, engine_info = ocr_reader.recognize_boxes_scaled(Image.fromarray(header))
+        return boxes, f"{engine_info}；标题区域 {header.shape[1]}x{header.shape[0]}"
+    except Exception as e:
+        log.warning("聊天标题 OCR 失败: %s: %s", type(e).__name__, e)
+        return [], f"识别异常：{type(e).__name__}"
+
+
+def select_chat_title(boxes, header_width):
+    """从标题栏 OCR 框中取左侧聊天名称，排除右侧工具按钮文字。"""
+    left_limit = max(100, int(header_width * 0.25))
+    candidates = [
+        (str(text).strip(), rect)
+        for text, rect in (boxes or [])
+        if str(text).strip() and rect[0] <= left_limit
+    ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0][0]
 
 
 def fallback_area(shape):
@@ -434,26 +483,33 @@ def grab_frame(hwnd, timeout=GRAB_TIMEOUT):
     return full, area
 
 
-def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
-    """4.x 采集入口：WGC 抓帧 → 定位消息区 → OCR → 分类 → 返回可见消息。
+def read_recent_with_title(hwnd, n=None, timeout=GRAB_TIMEOUT,
+                           include_messages=True):
+    """同一张 WGC 帧中识别聊天标题与可见消息。
 
-    返回 [(who, name, text)]；任何环节失败都返回 []（调用方据此回落下一级），
-    不影响主流程。帧与中间图像全程在内存里，不落盘。
+    返回 ``(messages, title_or_none)``。标题/聊天图像仅在内存处理，标题文字
+    不写日志。include_messages=False 时仍可单独读取标题。
     """
     if not hwnd:
-        return []
-    import ocr_reader
-    if not ocr_reader.ocr_available():
-        return []
+        return [], None
 
     full, area = grab_frame(hwnd, timeout=timeout)
     if full is None or area is None:
-        return []
+        return [], None
+
+    header_boxes, _header_info = recognize_chat_header(full, area)
+    title = select_chat_title(header_boxes, area[2] - area[0])
+    if not include_messages:
+        return [], title
+
+    import ocr_reader
+    if not ocr_reader.ocr_available():
+        return [], title
 
     x0, y_top, x1, y_in, pane_bg = area
     crop = full[y_top:y_in, x0:x1]
     if crop.size == 0:
-        return []
+        return [], title
     log.info(f"WGC 采集：整帧 {full.shape[1]}x{full.shape[0]} → 消息区 "
              f"({x0},{y_top})-({x1},{y_in}) 尺寸 {x1 - x0}x{y_in - y_top}")
 
@@ -462,10 +518,10 @@ def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
         boxes, pass_info = ocr_reader.recognize_boxes_scaled(Image.fromarray(crop))
     except Exception as e:
         log.warning(f"消息区 OCR 失败: {type(e).__name__}: {e}")
-        return []
+        return [], title
     if not boxes:
         log.info("WGC 采集：消息区没识别到文字")
-        return []
+        return [], title
 
     msgs = parse_messages(crop, boxes, pane_bg)
     if not msgs and pass_info.startswith("RapidOCR ") and not pass_info.startswith("RapidOCR 0,"):
@@ -476,7 +532,7 @@ def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
             msgs = parse_messages(crop, boxes, pane_bg)
     if not msgs:
         log.info(f"WGC 采集：识别到 {len(boxes)} 个文本框，但没有可用的消息")
-        return []
+        return [], title
     if n is None:
         picked = msgs
         selection = f"全部传入 {len(picked)} 条"
@@ -488,7 +544,13 @@ def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
         f"WGC 采集：{pass_info}；识别 {len(boxes)} 框 → {len(msgs)} 条消息，"
         f"{selection}"
     )
-    return picked
+    return picked, title
+
+
+def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
+    """兼容旧调用方：返回 WGC 识别到的可见消息列表。"""
+    messages, _title = read_recent_with_title(hwnd, n=n, timeout=timeout)
+    return messages
 
 
 if __name__ == "__main__":
@@ -562,6 +624,6 @@ if __name__ == "__main__":
 
     # 上下文文本：对方带名字（群聊），自己标「我」
     ctx = format_context([("her", "张三", "在吗"), ("me", None, "在的")])
-    assert ctx == "张三：在吗\n我：在的", f"上下文格式不对: {ctx!r}"
+    assert ctx == "对方（张三）：在吗\n我：在的", f"上下文格式不对: {ctx!r}"
 
     print("capture_wgc 自测通过：锚点", (x0, y_top, x1, y_in), "底色", tuple(int(v) for v in bg))

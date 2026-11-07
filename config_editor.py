@@ -301,8 +301,9 @@ class _Editor:
         tk.Label(nav, text="设置", bg="#f0f1f2", fg=TEXT,
                  font=TITLE_FONT, anchor="w", padx=20, pady=24).pack(fill="x")
         self.nav_btns = {}
-        for key, label in (("prompts", "提示词"), ("models", "模型与 Key"),
-                           ("usage", "使用方法"), ("author", "软件作者")):
+        for key, label in (("prompts", "提示词"), ("contacts", "联系人规则"),
+                           ("models", "模型与 Key"), ("usage", "使用方法"),
+                           ("author", "软件作者")):
             btn = tk.Label(nav, text=label, bg="#f0f1f2", fg=TEXT,
                            font=LABEL_FONT, anchor="w", padx=20, pady=13,
                            cursor="hand2")
@@ -313,16 +314,19 @@ class _Editor:
         self.body = tk.Frame(shell, bg=BG)
         self.body.grid(row=0, column=1, sticky="nsew")
         self.tab_prompts = tk.Frame(self.body, bg=BG)
+        self.tab_contacts = tk.Frame(self.body, bg=BG)
         self.tab_models = tk.Frame(self.body, bg=BG)
         self.tab_usage = tk.Frame(self.body, bg=BG)
         self.tab_author = tk.Frame(self.body, bg=BG)
         self._build_prompts_tab()
+        self._build_contact_rules_tab()
         self._build_models_tab()
         self._build_usage_tab()
         self._build_author_tab()
         # 页签名 → 内容容器，供 _switch_tab 统一切换（今后新增页签只需在此登记）
         self.tabs = {
             "prompts": self.tab_prompts,
+            "contacts": self.tab_contacts,
             "models": self.tab_models,
             "usage": self.tab_usage,
             "author": self.tab_author,
@@ -861,6 +865,195 @@ class _Editor:
     def _on_prompt_activate(self):
         return self._on_prompt_save(activate=True)
 
+    # ================= 联系人规则页签 =================
+
+    def _build_contact_rules_tab(self):
+        wrap = tk.Frame(self.tab_contacts, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=24, pady=20)
+        wrap.rowconfigure(2, weight=1)
+        wrap.columnconfigure(0, weight=1)
+
+        heading = tk.Frame(wrap, bg=BG)
+        heading.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        heading.columnconfigure(0, weight=1)
+        tk.Label(heading, text="联系人规则", bg=BG, fg=TEXT,
+                 font=TITLE_FONT, anchor="w").grid(row=0, column=0, sticky="w")
+        _mk_btn(heading, "+ 添加规则", self._add_contact_rule,
+                "primary").grid(row=0, column=1, sticky="e")
+
+        note = tk.Label(
+            wrap,
+            text="按微信顶部名称完整匹配；识别失败、重名或不确定时使用全局默认提示词。"
+                 "规则仅保存在本机，联系人名称不会单独发送给模型或写入详细日志。\n"
+                 "如果微信中有多个联系人使用相同显示名称，仅凭名称无法区分，请勿为该名称设置规则。",
+            bg="#f0f8f3", fg=MUTED, font=SMALL_FONT, anchor="w",
+            justify="left", padx=12, pady=9, wraplength=600,
+        )
+        note.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        _bind_wraplength(note, wrap, pad=48, min_w=200)
+
+        self.contact_list = _ScrollList(wrap)
+        self.contact_list.outer.grid(row=2, column=0, sticky="nsew")
+        self._render_contact_rules()
+
+    def _render_contact_rules(self):
+        self.contact_list.clear()
+        rules = config.get_contact_rules()
+        prompts = config.get_prompts()
+        prompt_names = {p.get("id"): p.get("name", "（未命名提示词）")
+                        for p in prompts}
+        if not rules:
+            _mk_label(self.contact_list.inner,
+                      "还没有联系人规则。点击右上角「添加规则」开始设置。",
+                      MUTED, SMALL_FONT).pack(anchor="w", padx=16, pady=16)
+            return
+
+        duplicate_names = {
+            name for name in (str(r.get("name") or "").strip() for r in rules)
+            if name and sum(str(r.get("name") or "").strip() == name for r in rules) > 1
+        }
+        for index, rule in enumerate(rules):
+            name = str(rule.get("name") or "").strip()
+            prompt_id = rule.get("prompt_id")
+            prompt_name = prompt_names.get(prompt_id, "提示词不存在（将使用默认）")
+            invalid = name in duplicate_names or prompt_id not in prompt_names
+            card = tk.Frame(self.contact_list.inner,
+                            bg="#fff8e8" if invalid else CARD_BG,
+                            highlightthickness=1, highlightbackground=BORDER,
+                            padx=12, pady=9)
+            card.pack(fill="x", padx=6, pady=(6, 0))
+            info = tk.Frame(card, bg=card["bg"])
+            info.pack(side="left", fill="x", expand=True)
+            tk.Label(info, text=name or "（名称为空）", bg=card["bg"], fg=TEXT,
+                     font=NAME_FONT, anchor="w").pack(anchor="w")
+            detail = f"使用提示词：{prompt_name}"
+            if name in duplicate_names:
+                detail += "　· 名称重复，当前不会应用"
+            tk.Label(info, text=detail, bg=card["bg"],
+                     fg=WARN if invalid else MUTED,
+                     font=SMALL_FONT, anchor="w").pack(anchor="w", pady=(3, 0))
+            actions = tk.Frame(card, bg=card["bg"])
+            actions.pack(side="right", padx=(8, 0))
+            _mk_btn(actions, "编辑", lambda i=index: self._edit_contact_rule(i),
+                    "secondary", pad=8).pack(side="left", padx=(0, 6))
+            _mk_btn(actions, "删除", lambda i=index: self._delete_contact_rule(i),
+                    "danger", pad=8).pack(side="left")
+
+    def _add_contact_rule(self):
+        self._open_contact_rule_dialog()
+
+    def _edit_contact_rule(self, index):
+        rules = config.get_contact_rules()
+        if 0 <= index < len(rules):
+            self._open_contact_rule_dialog(index=index, rule=rules[index])
+
+    def _delete_contact_rule(self, index):
+        rules = config.get_contact_rules()
+        if not 0 <= index < len(rules):
+            return
+        name = str(rules[index].get("name") or "").strip() or "该规则"
+        if not self._confirm("删除联系人规则", f"确定删除「{name}」的提示词规则吗？"):
+            return
+        rules.pop(index)
+        config.set_contact_rules(rules)
+        self._render_contact_rules()
+        self._flash(f"已删除联系人规则：{name}", "ok")
+
+    def _open_contact_rule_dialog(self, index=None, rule=None):
+        prompts = config.get_prompts()
+        if not prompts:
+            self._flash("请先创建至少一个提示词", "warn")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("编辑联系人规则" if rule else "添加联系人规则")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.columnconfigure(0, weight=1)
+        dialog.geometry("470x310")
+        dialog.grab_set()
+
+        body = tk.Frame(dialog, bg=PANEL, padx=20, pady=18)
+        body.pack(fill="both", expand=True, padx=14, pady=14)
+        body.columnconfigure(0, weight=1)
+        tk.Label(body, text="微信顶部显示的名称", bg=PANEL, fg=MUTED,
+                 font=SMALL_FONT, anchor="w").grid(row=0, column=0, sticky="ew")
+        name_var = tk.StringVar(master=dialog,
+                                value=(rule or {}).get("name", ""))
+        name_entry = _mk_entry(body)
+        name_entry.configure(textvariable=name_var)
+        name_entry.grid(row=1, column=0, sticky="ew", pady=(3, 14), ipady=5)
+
+        tk.Label(body, text="对应提示词", bg=PANEL, fg=MUTED,
+                 font=SMALL_FONT, anchor="w").grid(row=2, column=0, sticky="ew")
+        prompt_labels = []
+        label_to_id = {}
+        name_counts = {}
+        for prompt in prompts:
+            pname = str(prompt.get("name") or "未命名提示词")
+            name_counts[pname] = name_counts.get(pname, 0) + 1
+        for prompt in prompts:
+            pname = str(prompt.get("name") or "未命名提示词")
+            label = pname if name_counts[pname] == 1 else f"{pname}（重名 {prompt.get('id')}）"
+            prompt_labels.append(label)
+            label_to_id[label] = prompt.get("id")
+        current_id = (rule or {}).get("prompt_id")
+        initial_label = next((label for label, pid in label_to_id.items()
+                              if pid == current_id), prompt_labels[0])
+        prompt_var = tk.StringVar(master=dialog, value=initial_label)
+        option = tk.OptionMenu(body, prompt_var, *prompt_labels)
+        option.configure(bg=FIELD_BG, fg=TEXT, relief="flat", anchor="w",
+                         highlightthickness=1, highlightbackground=FIELD_BORDER,
+                         font=LABEL_FONT)
+        option.grid(row=3, column=0, sticky="ew", pady=(3, 8), ipady=3)
+
+        tk.Label(body, text="只按完整名称匹配；同名联系人无法仅凭此名称区分。",
+                 bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="w",
+                 justify="left", wraplength=400).grid(
+                     row=4, column=0, sticky="ew", pady=(0, 12))
+
+        buttons = tk.Frame(body, bg=PANEL)
+        buttons.grid(row=5, column=0, sticky="e")
+
+        def save():
+            name = name_var.get().strip()
+            if not name:
+                from tkinter import messagebox
+                messagebox.showwarning("名称不能为空", "请填写微信顶部显示的完整名称。",
+                                       parent=dialog)
+                name_entry.focus_set()
+                return
+            rules = config.get_contact_rules()
+            original_id = (rule or {}).get("id")
+            for other_index, other in enumerate(rules):
+                same_record = (other_index == index) if index is not None else False
+                if not same_record and str(other.get("name") or "").strip() == name:
+                    from tkinter import messagebox
+                    messagebox.showwarning(
+                        "名称重复", "已有同名规则。为避免匹配歧义，请编辑已有规则。",
+                        parent=dialog,
+                    )
+                    return
+            prompt_id = label_to_id.get(prompt_var.get())
+            if not prompt_id:
+                return
+            saved = {"id": original_id, "name": name, "prompt_id": prompt_id}
+            if index is None:
+                rules.append(saved)
+            else:
+                rules[index] = saved
+            config.set_contact_rules(rules)
+            dialog.destroy()
+            self._render_contact_rules()
+            self._flash(f"已保存联系人规则：{name}", "ok")
+
+        _mk_btn(buttons, "取消", dialog.destroy, "secondary").pack(side="right", padx=(8, 0))
+        _mk_btn(buttons, "保存规则", save, "primary").pack(side="right")
+        name_entry.focus_set()
+        dialog.bind("<Return>", lambda _e: save())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+
     # ================= 模型与 Key 页签 =================
 
     def _build_models_tab(self):
@@ -1299,8 +1492,15 @@ class _Editor:
         wrap.columnconfigure(0, weight=1)
         wrap.rowconfigure(1, weight=1)
 
-        tk.Label(wrap, text="使用方法", bg=BG, fg=TEXT, font=TITLE_FONT,
-                 anchor="w").grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        heading = tk.Frame(wrap, bg=BG)
+        heading.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        heading.columnconfigure(0, weight=1)
+        tk.Label(heading, text="使用方法", bg=BG, fg=TEXT, font=TITLE_FONT,
+                 anchor="w").grid(row=0, column=0, sticky="w")
+        self.title_test_btn = _mk_btn(
+            heading, "测试聊天名称识别", self._test_chat_title, "secondary",
+        )
+        self.title_test_btn.grid(row=0, column=1, sticky="e")
 
         scroll = tk.Frame(wrap, bg=BG)
         scroll.grid(row=1, column=0, sticky="nsew")
@@ -1435,6 +1635,86 @@ class _Editor:
         canvas.configure(scrollregion=canvas.bbox("all"))
 
     # ================= 软件作者页签 =================
+
+    def _test_chat_title(self):
+        """手动验证当前微信窗口的标题 OCR；不写入日志、不影响回复流程。"""
+        self.title_test_btn.configure(text="识别中…", state="disabled")
+        self._flash("正在读取当前微信窗口标题…", "info")
+
+        def worker():
+            import time
+            started = time.perf_counter()
+            title, detail = None, ""
+            try:
+                import capture_wgc
+                import wechat_window
+
+                if not capture_wgc.wgc_available():
+                    detail = "当前环境没有 WGC 采集依赖。"
+                else:
+                    hwnd = wechat_window.find_wechat_hwnd()
+                    if not hwnd:
+                        detail = "没有找到可见的微信主窗口，请先打开微信聊天窗口后重试。"
+                    else:
+                        full, area = capture_wgc.grab_frame(hwnd, timeout=4.0)
+                        if full is None:
+                            detail = "无法读取微信窗口画面，请确认微信窗口已打开且未最小化。"
+                        else:
+                            if area is None:
+                                area = capture_wgc.fallback_area(full.shape)
+                            boxes, detail = capture_wgc.recognize_chat_header(full, area)
+                            if area:
+                                title = capture_wgc.select_chat_title(
+                                    boxes, area[2] - area[0],
+                                )
+                                details = [
+                                    f"窗口帧 {full.shape[1]}x{full.shape[0]}",
+                                    f"面板范围 x={area[0]}–{area[2]}"
+                                    f", y_top={area[1]}",
+                                ]
+                                details.extend(
+                                    f"OCR框 {text!r} @({rect[0]},{rect[1]}"
+                                    f")-({rect[2]},{rect[3]})"
+                                    for text, rect in boxes[:5]
+                                )
+                                detail = f"{detail}；" + "；".join(details)
+                            if not title and not detail:
+                                detail = "标题区域没有识别到文字。"
+            except Exception as exc:
+                detail = f"识别失败：{type(exc).__name__}: {exc}"
+
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            result = title, detail, elapsed_ms
+            try:
+                self.root.after(0, lambda: self._on_chat_title_test_done(result))
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_chat_title_test_done(self, result):
+        title, detail, elapsed_ms = result
+        try:
+            self.title_test_btn.configure(text="测试聊天名称识别", state="normal")
+        except Exception:
+            return
+
+        from tkinter import messagebox
+        if title:
+            messagebox.showinfo(
+                "聊天名称识别结果",
+                f"识别结果：{title}\n\n{detail}\n总耗时：{elapsed_ms} ms\n\n"
+                "本次仅做识别验证，不会保存名称或切换提示词。",
+                parent=self.root,
+            )
+            self._flash(f"聊天名称识别成功（{elapsed_ms} ms）", "ok")
+        else:
+            messagebox.showwarning(
+                "聊天名称识别结果",
+                f"没有识别到聊天名称。\n\n{detail}\n总耗时：{elapsed_ms} ms",
+                parent=self.root,
+            )
+            self._flash("聊天名称识别未成功", "warn")
 
     def _build_author_tab(self):
         """「软件作者」页：作者信息与公众号二维码。

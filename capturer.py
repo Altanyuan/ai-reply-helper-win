@@ -87,7 +87,15 @@ def capture_draft():
 
 
 def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc"):
-    """尽力读取微信当前聊天窗口中可获取的消息作为上下文。
+    """兼容旧调用方：返回微信当前聊天上下文。"""
+    context, _title = read_wechat_recent_with_title(
+        n=n, use_ocr=use_ocr, hwnd=hwnd, backend=backend,
+    )
+    return context
+
+
+def read_wechat_recent_with_title(n=None, use_ocr=True, hwnd=None, backend="wgc"):
+    """尽力读取微信消息上下文与本地聊天标题（读取不到标题则为 None）。
 
     **两条采集路径按「运行时能力探测」分流，互不干扰**（不解析微信版本号）：
 
@@ -100,7 +108,8 @@ def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc"):
         （WGC 窗口捕获 + 像素锚点定位 + 说话人分类，被遮挡也能截、不抢前台），
         失败再回落到原有的「截屏 OCR」。
 
-    任何一级失败都只是降级（最终返回空字符串 = 无上下文润色），不影响主流程。
+    标题只由 WGC 4.x 路径提供，UIA/旧截屏路径无标题时返回 None；任何失败均
+    安全回落，不影响现有上下文读取。
 
     参数：
       n: 可选的最近消息数量；None 表示读取当前可获取的全部消息
@@ -114,7 +123,7 @@ def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc"):
         hwnd = hwnd or wechat_window.find_wechat_hwnd()
         if not hwnd:
             log.info("未找到微信窗口，跳过上下文读取")
-            return ""
+            return "", None
         # 新版微信（4.x/Qt）默认不暴露 UIA 子控件树，先唤醒无障碍桥再试 UIA。
         # 对 3.x 是无害的空操作。
         wechat_window.wake_accessibility(hwnd, rounds=3, interval=0.25)
@@ -122,26 +131,29 @@ def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc"):
         # ============ 3.x 路径：UIA 直读（命中即返回）============
         text = _read_via_uia(n)
         if text:
-            return text
+            return text, None
 
         # ============ 4.x 路径：WGC 采集（Qt 自绘，UIA 拿不到控件树）============
-        if use_ocr and str(backend or "wgc").lower() != "ocr":
-            text = _read_via_wgc(hwnd, n)
+        chat_title = None
+        if str(backend or "wgc").lower() != "ocr":
+            text, chat_title = _read_via_wgc_with_title(
+                hwnd, n, include_messages=use_ocr,
+            )
             if text:
-                return text
+                return text, chat_title
 
         # ============ 兜底：截屏 OCR（4.x 的旧路径 / WGC 不可用时）============
         if use_ocr:
             text = _read_via_screen_ocr(hwnd, n)
             if text:
-                return text
+                return text, chat_title
             log.info("OCR 未取到上下文（可能聊天区为空、或窗口不在前台被遮挡）")
 
         log.info("未读取到任何聊天上下文（UIA 不可读且 4.x 采集无结果或不可用）")
-        return ""
+        return "", chat_title
     except Exception as e:
         log.warning(f"读取微信上下文失败（已降级为空）: {e}")
-        return ""
+        return "", None
 
 
 # ==================== 3.x 路径：UIA 直读 ====================
@@ -222,17 +234,25 @@ def _read_via_wgc(hwnd, n):
 
     失败（依赖缺失、窗口不可见、OCR 无结果）返回空字符串，由调用方回落下一级。
     """
+    context, _title = _read_via_wgc_with_title(hwnd, n)
+    return context
+
+
+def _read_via_wgc_with_title(hwnd, n, include_messages=True):
+    """WGC 同帧读取标题和消息；标题只返回给本机调用方。"""
     try:
         import capture_wgc
     except Exception as e:
         log.warning(f"WGC 采集模块不可用（{type(e).__name__}），将回落到截屏 OCR")
-        return ""
+        return "", None
     if not capture_wgc.wgc_available():
-        return ""
-    msgs = capture_wgc.read_recent(hwnd, n=n)
+        return "", None
+    msgs, title = capture_wgc.read_recent_with_title(
+        hwnd, n=n, include_messages=include_messages,
+    )
     if not msgs:
-        return ""
-    return capture_wgc.format_context(msgs)
+        return "", title
+    return capture_wgc.format_context(msgs), title
 
 
 # ==================== 兜底：截屏 OCR（4.x 旧路径）====================
