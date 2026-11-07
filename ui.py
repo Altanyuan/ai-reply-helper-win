@@ -425,6 +425,15 @@ def _build_choices(root, versions, on_choose, chat_name=None,
 
         actions = tk.Frame(card, bg=SURFACE)
         actions.pack(fill="x", pady=(7, 0))
+        expand = tk.Button(
+            actions, text="展开", bg=SURFACE, fg=GREEN_600,
+            activebackground=SURFACE, activeforeground=GREEN_700,
+            relief="flat", borderwidth=0, font=("Segoe UI", 11),
+            padx=0, pady=2, cursor="hand2", takefocus=True,
+            highlightthickness=1, highlightbackground=SURFACE,
+            highlightcolor=GREEN_600,
+        )
+        expand.pack(side="left")
         acts = tk.Frame(actions, bg=SURFACE)
         acts.pack(side="right")
 
@@ -448,16 +457,35 @@ def _build_choices(root, versions, on_choose, chat_name=None,
         fill_btn.pack(side="left")
         fill_buttons[index] = fill_btn
 
-        def fit_body():
+        expanded = [False]
+        line_count = [1]
+
+        def toggle_expand():
+            expanded[0] = not expanded[0]
+            body.configure(height=line_count[0] if expanded[0] else min(2, line_count[0]))
+            expand.configure(text="收起" if expanded[0] else "展开")
+
+        expand.configure(command=toggle_expand)
+
+        def sync_expand():
             try:
                 result = body.count("1.0", "end-1c", "displaylines")
                 lines = int(result[0]) if result else 1
             except (tk.TclError, TypeError, ValueError):
                 lines = max(1, (len(content) + 38) // 39)
-            body.configure(height=max(1, lines))
+            line_count[0] = max(1, lines)
+            if lines > 2:
+                body.configure(height=lines if expanded[0] else 2)
+                expand.configure(text="收起" if expanded[0] else "展开")
+                if not expand.winfo_manager():
+                    expand.pack(side="left")
+            else:
+                expanded[0] = False
+                body.configure(height=max(1, lines))
+                expand.pack_forget()
 
-        body.bind("<Configure>", lambda _e: root.after_idle(fit_body), add="+")
-        root.after_idle(fit_body)
+        body.bind("<Configure>", lambda _e: root.after_idle(sync_expand), add="+")
+        root.after_idle(sync_expand)
         return card
 
     def copy_text(text):
