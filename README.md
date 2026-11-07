@@ -279,4 +279,3 @@ build.bat
   托盘原本就是按 220px 显示并抽帧的，画质影响很小。
 - 目标平台：**Windows 10/11 64 位**（程序依赖 `uiautomation` 与 Windows `user32` API，不支持 macOS/Linux）。
 - 业务前提：朋友电脑需安装**微信 PC 版**并登录。
-
