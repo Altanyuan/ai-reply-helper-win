@@ -14,6 +14,8 @@ tray.run_ui() 路由到【主线程】执行，并以 Toplevel(master=托盘根)
 """
 import tkinter as tk
 import tkinter.font as tkfont
+from tkinter import ttk
+import math
 import pyperclip
 from PIL import Image, ImageTk
 from paths import asset
@@ -53,20 +55,54 @@ TAIL = 8                     # 气泡小尾巴长度
 _AI_AVATAR_IMAGE = None      # 缓存图标，避免每条建议都重新解码
 
 
-def _round_rect(canvas, x1, y1, x2, y2, r, fill, outline="", width=0):
-    """在 Canvas 上画圆角矩形（纯 tk，不依赖图片）。"""
-    canvas.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r, start=90, extent=90,
-                      style="pieslice", outline=outline, width=width, fill=fill)
-    canvas.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r, start=0, extent=90,
-                      style="pieslice", outline=outline, width=width, fill=fill)
-    canvas.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2, start=270, extent=90,
-                      style="pieslice", outline=outline, width=width, fill=fill)
-    canvas.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2, start=180, extent=90,
-                      style="pieslice", outline=outline, width=width, fill=fill)
-    canvas.create_rectangle(x1 + r, y1, x2 - r, y2,
-                            outline=outline, width=width, fill=fill)
-    canvas.create_rectangle(x1, y1 + r, x2, y2 - r,
-                            outline=outline, width=width, fill=fill)
+def _round_rect(canvas, x1, y1, x2, y2, r, fill, outline="", width=0, tags=()):
+    """以单一多边形绘制平滑圆角，避免分片图形拼接产生白缝。"""
+    r = max(0, min(r, (x2-x1)/2, (y2-y1)/2))
+    points = []
+    for cx, cy, start in ((x2-r, y1+r, -90), (x2-r, y2-r, 0),
+                          (x1+r, y2-r, 90), (x1+r, y1+r, 180)):
+        for step in range(9):
+            angle = math.radians(start + step * 90 / 8)
+            points.extend((cx + r*math.cos(angle), cy + r*math.sin(angle)))
+    return canvas.create_polygon(*points, smooth=True, splinesteps=24,
+                                 fill=fill, outline=outline, width=width,
+                                 joinstyle="round", tags=tags)
+
+
+class _RoundButton(tk.Canvas):
+    """轻量圆角按钮，保持 tkinter 原生回调与键盘 invoke 接口。"""
+    def __init__(self, parent, text, command, *, bg, fg, font, width=None):
+        self._text, self._command = text, command
+        self._bg, self._fg, self._font = bg, fg, font
+        measured = tkfont.Font(font=font).measure(text)
+        self._width = width or measured + 22
+        self._height = 32
+        super().__init__(parent, width=self._width, height=self._height,
+                         bg=parent.cget("bg"), highlightthickness=0, bd=0,
+                         cursor="hand2", takefocus=True)
+        self._draw()
+        self.bind("<Button-1>", lambda _e: self.invoke())
+        self.bind("<Return>", lambda _e: self.invoke())
+        self.bind("<space>", lambda _e: self.invoke())
+        self.bind("<Enter>", self._enter)
+        self.bind("<Leave>", self._leave)
+
+    def _draw(self, fill=None):
+        self.delete("all")
+        _round_rect(self, 1, 1, self._width - 1, self._height - 1, 8,
+                    fill or self._bg, outline=LINE if self._bg == SURFACE else (fill or self._bg))
+        self.create_text(self._width / 2, self._height / 2, text=self._text,
+                         fill=self._fg, font=self._font)
+
+    def _enter(self, _event=None):
+        self._draw(PAGE if self._bg == SURFACE else GREEN_700)
+
+    def _leave(self, _event=None):
+        self._draw()
+
+    def invoke(self):
+        if self._command:
+            self._command()
 
 
 def _make_avatar(parent, letter, side):
@@ -250,25 +286,21 @@ def _build_choices(root, versions, on_choose, chat_name=None,
     # 联系人和本次提示词集中在一条固定工具栏中。
     context = tk.Frame(root, bg=SURFACE, padx=12, pady=5)
     context.pack(fill="x")
+    context.columnconfigure(2, weight=1)
     name = str(chat_name or "").strip() or "未识别"
     chip = tk.Frame(context, bg=SURFACE, highlightthickness=1,
                     highlightbackground=LINE, highlightcolor=GREEN_600)
-    chip.pack(side="left", padx=(0, 7), ipady=1)
-    chip.configure(width=96, height=22)
-    chip.pack_propagate(False)
+    name_font = tkfont.Font(family="Segoe UI", size=12)
+    desired_chip_width = max(86, int(name_font.measure(name)) + 36)
+    chip.configure(width=desired_chip_width, height=24)
+    chip.grid_propagate(False)
     initial = name[:1] if name and name != "未识别" else "·"
     avatar = tk.Label(chip, text=initial, bg="#DCEFE4", fg="#256B47",
                       font=("Segoe UI", 9, "bold"), width=2, height=1)
     avatar.pack(side="left", padx=(3, 4), pady=2)
-    name_font = tkfont.Font(family="Segoe UI", size=12)
-    display_name = name
-    while display_name and name_font.measure(display_name) > 62:
-        display_name = display_name[:-1]
-    if display_name != name:
-        display_name = display_name[:-1] + "…" if display_name else "…"
-    tk.Label(chip, text=display_name, bg=SURFACE, fg=INK_700,
-             font=("Segoe UI", 12), anchor="w").pack(
-                 side="left", padx=(0, 7))
+    name_label = tk.Label(chip, text=name, bg=SURFACE, fg=INK_700,
+                          font=("Segoe UI", 12), anchor="w", justify="left")
+    name_label.pack(side="left", padx=(0, 7), fill="x", expand=True)
 
     name_counts = {}
     for prompt in prompts or []:
@@ -290,22 +322,18 @@ def _build_choices(root, versions, on_choose, chat_name=None,
                     or str(prompt_name or "全局默认"))
     selected = tk.StringVar(master=root, value=active_label)
     if label_to_id:
-        menu = tk.Menu(root, tearoff=False, bg=SURFACE, fg=INK_700,
-                       activebackground=PAGE, activeforeground=INK_900,
-                       font=("Segoe UI", 11))
-        for label in label_to_id:
-            menu.add_radiobutton(label=label, variable=selected, value=label)
-        prompt_picker = tk.Menubutton(
-            context, textvariable=selected, bg=SURFACE, fg=INK_700,
-            relief="flat", borderwidth=1, highlightthickness=1,
-            highlightbackground=LINE, highlightcolor=GREEN_600,
-            activebackground=PAGE, font=("Segoe UI", 12), cursor="hand2",
-            padx=7, pady=2, takefocus=True, menu=menu,
+        style = ttk.Style(root)
+        style.configure("Prompt.TCombobox", font=("Segoe UI", 10), padding=(8, 4))
+        prompt_picker = ttk.Combobox(
+            context, textvariable=selected, values=tuple(label_to_id),
+            state="readonly", width=max(8, min(14, max(map(len, label_to_id)) + 2)),
+            style="Prompt.TCombobox", takefocus=True,
         )
     else:
         prompt_picker = tk.Label(context, text=active_label, bg=SURFACE,
                                  fg=INK_700, font=("Segoe UI", 12),
                                  padx=7, pady=2)
+        prompt_picker.configure(relief="flat")
     regen = None
     if on_prompt_change and label_to_id:
         def regenerate():
@@ -315,16 +343,53 @@ def _build_choices(root, versions, on_choose, chat_name=None,
                 on_prompt_change(next_id)
 
         regen = tk.Button(
-            context, text="↻", command=regenerate, bg=SURFACE, fg=INK_500,
-            relief="flat", borderwidth=0, activebackground=PAGE,
-            activeforeground=GREEN_700, font=("Segoe UI", 14),
-            width=2, height=1, cursor="hand2", takefocus=True,
+            context, text="↻", command=regenerate, bg=SURFACE,
+            fg=INK_700, relief="flat", borderwidth=1,
+            activebackground=PAGE, activeforeground=GREEN_700,
+            font=("Segoe UI", 16), width=2, padx=2, pady=0, cursor="hand2", takefocus=True,
             highlightthickness=1, highlightbackground=LINE,
             highlightcolor=GREEN_600,
         )
-        regen.pack(side="right", padx=(7, 0))
-        regen.tooltip = "按所选提示词重新生成"
-    prompt_picker.pack(side="left", fill="x", expand=True)
+    if regen is not None:
+        regen.grid(row=0, column=3, padx=(7, 0), sticky="e")
+    chip.grid(row=0, column=0, padx=(0, 8), sticky="w")
+    prompt_picker.grid(row=0, column=1, sticky="w")
+
+    def fit_context(_event=None):
+        available = max(0, context.winfo_width() - 24)
+        prompt_min = 120
+        regen_width = regen.winfo_reqwidth() + 7 if regen is not None else 0
+        needs_second_row = chip.winfo_reqwidth() + prompt_min + regen_width > available
+        actual_chip_width = min(desired_chip_width, max(86, available))
+        name_label.configure(wraplength=max(80, actual_chip_width - 36))
+        chip.configure(width=actual_chip_width,
+                       height=max(24, name_label.winfo_reqheight() + 4))
+        if needs_second_row:
+            chip.grid_configure(row=0, column=0, columnspan=3, sticky="w")
+            prompt_picker.grid_configure(row=1, column=0, columnspan=2,
+                                         sticky="w", pady=(5, 0))
+            if regen is not None:
+                regen.grid_configure(row=1, column=3, padx=(7, 0),
+                                     pady=(5, 0), sticky="e")
+            context.columnconfigure(0, weight=0)
+            context.columnconfigure(1, weight=0)
+            context.columnconfigure(2, weight=1)
+            context.columnconfigure(3, weight=0)
+        else:
+            chip.grid_configure(row=0, column=0, columnspan=1, sticky="w")
+            prompt_picker.grid_configure(row=0, column=1, columnspan=1,
+                                         sticky="w", pady=0)
+            if regen is not None:
+                regen.grid_configure(row=0, column=3, padx=(7, 0),
+                                     pady=0, sticky="e")
+            context.columnconfigure(0, weight=0)
+            context.columnconfigure(1, weight=0)
+            context.columnconfigure(2, weight=1)
+            context.columnconfigure(3, weight=0)
+        name_label.configure(wraplength=max(120, min(500, available - 40)))
+
+    context.bind("<Configure>", fit_context, add="+")
+    root.after_idle(fit_context)
     tk.Frame(root, bg=LINE, height=1).pack(fill="x")
 
     # 安全说明固定在列表外，滚动建议时始终可见。
@@ -403,19 +468,34 @@ def _build_choices(root, versions, on_choose, chat_name=None,
     fill_buttons = {}
 
     def make_card(index, content):
-        card = tk.Frame(inner, bg=SURFACE, highlightthickness=1,
-                        highlightbackground=LINE, highlightcolor=LINE_STRONG,
-                        padx=11, pady=8)
-        card.pack(fill="x", pady=(0, 8))
+        shell = tk.Canvas(inner, bg=PAGE, height=110, highlightthickness=0,
+                          bd=0, takefocus=False)
+        shell.pack(fill="x", pady=(0, 8))
+        card = tk.Frame(shell, bg=SURFACE, padx=11, pady=8, bd=0)
+        window_id = shell.create_window(9, 8, anchor="nw", window=card)
+
+        def redraw(_event=None):
+            width = max(40, shell.winfo_width() - 18)
+            shell.itemconfigure(window_id, width=width)
+            shell.delete("card-bg")
+            _round_rect(shell, 1, 1, max(3, shell.winfo_width()-2),
+                        max(3, shell.winfo_height()-2), 14, SURFACE,
+                        outline=LINE, width=1, tags=("card-bg",))
+            shell.tag_lower("card-bg", window_id)
+
+        shell.bind("<Configure>", redraw, add="+")
+        card.bind("<Configure>", lambda _e: shell.after_idle(
+            lambda: shell.configure(height=card.winfo_reqheight()+16)), add="+")
+        shell.bind("<Enter>", lambda _e: redraw(), add="+")
 
         def on_card_enter(_event):
-            card.configure(highlightbackground=LINE_STRONG)
+            shell.configure(highlightthickness=1, highlightbackground=LINE_STRONG)
 
         def on_card_leave(_event):
-            card.configure(highlightbackground=LINE)
+            shell.configure(highlightthickness=0)
 
-        card.bind("<Enter>", on_card_enter, add="+")
-        card.bind("<Leave>", on_card_leave, add="+")
+        shell.bind("<Enter>", on_card_enter, add="+")
+        shell.bind("<Leave>", on_card_leave, add="+")
         top = tk.Frame(card, bg=SURFACE)
         top.pack(fill="x", pady=(0, 5))
         badge = tk.Label(top, text=str(index), bg="#EEF1F4", fg=INK_500,
@@ -426,81 +506,31 @@ def _build_choices(root, versions, on_choose, chat_name=None,
         tk.Label(top, text=f"{len(content)} 字", bg=SURFACE, fg=INK_400,
                  font=("Segoe UI", 11), anchor="e").pack(side="right")
 
-        body = tk.Text(
-            card, height=2, wrap="word", bg=SURFACE, fg=INK_900,
-            font=("Segoe UI", 14), relief="flat", borderwidth=0,
-            padx=0, pady=0, spacing1=1, spacing3=3, takefocus=False,
-            cursor="arrow", selectbackground="#CDE8D7",
+        body = tk.Label(
+            card, text=content, anchor="w", justify="left", wraplength=460,
+            bg=SURFACE, fg=INK_900, font=("Segoe UI", 10),
         )
-        body.insert("1.0", content)
-        body.configure(state="disabled")
         body.pack(fill="x", expand=False)
+        card.bind("<Configure>", lambda event: body.configure(
+            wraplength=max(120, event.width-24)), add="+")
 
         actions = tk.Frame(card, bg=SURFACE)
         actions.pack(fill="x", pady=(7, 0))
-        expand = tk.Button(
-            actions, text="展开", bg=SURFACE, fg=GREEN_600,
-            activebackground=SURFACE, activeforeground=GREEN_700,
-            relief="flat", borderwidth=0, font=("Segoe UI", 11),
-            padx=0, pady=2, cursor="hand2", takefocus=True,
-            highlightthickness=1, highlightbackground=SURFACE,
-            highlightcolor=GREEN_600,
-        )
-        expand.pack(side="left")
         acts = tk.Frame(actions, bg=SURFACE)
         acts.pack(side="right")
 
-        copy_btn = tk.Button(
+        copy_btn = _RoundButton(
             acts, text="复制", command=lambda t=content, n=index: copy_text(t, n),
-            bg=SURFACE, fg=INK_700, activebackground=PAGE,
-            relief="flat", borderwidth=1, highlightthickness=1,
-            highlightbackground=LINE, highlightcolor=GREEN_600,
-            font=("Segoe UI", 12), padx=9, pady=2, cursor="hand2",
-            takefocus=True,
+            bg=SURFACE, fg=INK_700, font=("Segoe UI", 10),
         )
         copy_btn.pack(side="left", padx=(0, 6))
-        fill_btn = tk.Button(
+        fill_btn = _RoundButton(
             acts, text="回填微信", command=lambda t=content: choose(t),
-            bg=GREEN_600, fg=SURFACE, activebackground=GREEN_700,
-            activeforeground=SURFACE, relief="flat", borderwidth=0,
-            highlightthickness=1, highlightbackground=GREEN_600,
-            highlightcolor=INK_900, font=("Segoe UI", 12, "bold"),
-            padx=10, pady=3, cursor="hand2", takefocus=True,
+            bg=GREEN_600, fg=SURFACE, font=("Segoe UI", 10, "bold"),
         )
         fill_btn.pack(side="left")
         fill_buttons[index] = fill_btn
 
-        expanded = [False]
-
-        def toggle_expand():
-            expanded[0] = not expanded[0]
-            body.configure(height=line_count[0] if expanded[0] else 2)
-            expand.configure(text="收起" if expanded[0] else "展开")
-
-        expand.configure(command=toggle_expand)
-        line_count = [2]
-
-        def sync_expand():
-            try:
-                result = body.count("1.0", "end-1c", "displaylines")
-                lines = int(result[0]) if result else 1
-            except (tk.TclError, TypeError, ValueError):
-                lines = 2 if len(content) > 50 else 1
-            line_count[0] = max(1, lines)
-            if lines > 2:
-                body.configure(height=lines if expanded[0] else 2)
-            else:
-                expanded[0] = False
-                body.configure(height=max(1, lines))
-            expand.pack_forget()
-            if lines > 2:
-                expand.configure(text="收起" if expanded[0] else "展开")
-                expand.pack(side="left")
-            else:
-                expand.pack_forget()
-
-        body.bind("<Configure>", lambda _e: root.after_idle(sync_expand), add="+")
-        root.after_idle(sync_expand)
         return card
 
     def copy_text(text, index):
@@ -571,6 +601,37 @@ def _wire_close(root, on_close):
     root.bind("<Destroy>", _on_destroy)
 
 
+def _request_rounded_window(root):
+    """给 Tk 顶层窗口设置原生窗口区域圆角（Win10/11）。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+
+        def apply_region(_event=None):
+            if not root.winfo_exists() or root.state() == "iconic":
+                return
+            class RECT(ctypes.Structure):
+                _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                            ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+            rect = RECT()
+            hwnd = wintypes.HWND(root.winfo_id())
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+            width, height = rect.right-rect.left, rect.bottom-rect.top
+            region = gdi32.CreateRoundRectRgn(0, 0, width+1, height+1, 26, 26)
+            if region:
+                # Windows owns the HRGN after successful SetWindowRgn.
+                if not user32.SetWindowRgn(hwnd, region, True):
+                    gdi32.DeleteObject(region)
+
+        root.after(80, apply_region)
+        root.bind("<Configure>", lambda _e: root.after_idle(apply_region), add="+")
+    except Exception:
+        # Non-Windows environments keep their platform-native window shape.
+        pass
+
+
 def show_choices(versions, on_choose, master=None, on_close=None,
                  chat_name=None, prompt_name=None, prompt_id=None,
                  prompt_source="全局默认", prompts=None,
@@ -587,8 +648,8 @@ def show_choices(versions, on_choose, master=None, on_close=None,
     root = tk.Toplevel(master) if master is not None else tk.Tk()
     root.title("AI 回复建议")
     root.attributes("-topmost", True)
-    root.geometry("448x640")
-    root.minsize(400, 360)
+    root.geometry("568x760")
+    root.minsize(480, 360)
     root.resizable(True, True)
     try:
         root.iconify()       # 防止闪烁，随后立刻恢复
@@ -602,6 +663,7 @@ def show_choices(versions, on_choose, master=None, on_close=None,
         on_prompt_change=on_prompt_change,
     )
     root.update_idletasks()
+    _request_rounded_window(root)
     _wire_close(root, on_close)
     if master is None:
         root.mainloop()
