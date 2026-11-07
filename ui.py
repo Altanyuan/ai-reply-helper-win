@@ -1,9 +1,7 @@
-"""微信聊天框风格的润色结果弹窗（纯 tkinter 实现，不依赖 PIL/ImageTk）。
+"""微信风格的回复建议弹窗（纯 tkinter 实现，不依赖 PIL/ImageTk）。
 
-只改样式，不改变功能：
-- show_choices(versions, on_choose, master=None, on_close=None)：展示多个润色版本，
-  每个版本是微信「我发出的」绿色气泡，下方带「复制 / 发送」按钮；另有一条 AI 的
-  白色气泡作引导；Esc 关闭。
+show_choices(versions, on_choose, master=None, on_close=None)：展示多个 AI 回复建议，
+以蓝白色 AI 气泡与微信已发送消息区分；下方提供「复制 / 回填微信」；Esc 关闭。
 - show_error(msg, master=None, on_close=None)：微信风格的错误提示卡。
 
 线程模型（关键）：
@@ -16,6 +14,8 @@ tray.run_ui() 路由到【主线程】执行，并以 Toplevel(master=托盘根)
 """
 import tkinter as tk
 import pyperclip
+from PIL import Image, ImageTk
+from paths import asset
 
 # ---- 微信配色 ----
 CHAT_BG = "#ededed"          # 聊天区背景灰
@@ -23,6 +23,7 @@ HEADER_BG = "#f7f7f7"        # 顶栏
 HEADER_LINE = "#d9d9d9"      # 顶栏分隔线
 GREEN = "#95EC69"            # 微信发出气泡绿
 WHITE = "#ffffff"            # 收到气泡白
+DRAFT_BG = "#e8f4ff"         # AI 回复建议浅蓝底，区别于已发送消息
 TEXT = "#1f1f1f"             # 正文
 MINE = "#07C160"             # 头像/发送按钮绿（微信绿）
 AI = "#10AEFF"               # AI 头像蓝
@@ -31,9 +32,10 @@ TITLE_FONT = ("Microsoft YaHei", 13, "bold")
 TEXT_FONT = ("Microsoft YaHei", 11)
 SYS_FONT = ("Microsoft YaHei", 10)
 
-BUBBLE_MAX = 282             # 气泡最大宽度
+BUBBLE_MAX = 320             # 气泡最大宽度
 PAD = 10                     # 气泡内边距
 TAIL = 8                     # 气泡小尾巴长度
+_AI_AVATAR_IMAGE = None      # 缓存图标，避免每条建议都重新解码
 
 
 def _round_rect(canvas, x1, y1, x2, y2, r, fill, outline="", width=0):
@@ -53,17 +55,33 @@ def _round_rect(canvas, x1, y1, x2, y2, r, fill, outline="", width=0):
 
 
 def _make_avatar(parent, letter, side):
-    """画一个微信风格圆形头像（蓝=AI，绿=我）。"""
-    color = MINE if side == "right" else AI
+    """AI 显示应用图标，本人消息保留微信绿色圆形头像。"""
+    global _AI_AVATAR_IMAGE
     c = tk.Canvas(parent, width=36, height=36, bg=CHAT_BG,
                   highlightthickness=0, bd=0)
+    if side != "right":
+        try:
+            if _AI_AVATAR_IMAGE is None:
+                with Image.open(asset("icon.ico")) as source:
+                    icon = source.convert("RGBA").resize(
+                        (36, 36), Image.Resampling.LANCZOS,
+                    )
+                _AI_AVATAR_IMAGE = ImageTk.PhotoImage(icon, master=parent)
+            c.create_image(18, 18, image=_AI_AVATAR_IMAGE)
+            c._avatar_image = _AI_AVATAR_IMAGE
+            return c
+        except Exception:
+            # 缺少图标资源时保留原 AI 圆形头像，避免结果窗口无法打开。
+            color = AI
+    else:
+        color = MINE
     c.create_oval(2, 2, 34, 34, fill=color, outline=color)
     c.create_text(18, 19, text=letter, fill="white",
                   font=("Microsoft YaHei", 12, "bold"))
     return c
 
 
-def _make_bubble(parent, text, side="right"):
+def _make_bubble(parent, text, side="right", bubble_fill=None):
     """画一个微信气泡（圆角矩形 + 小尾巴），返回承载它的 Frame。"""
     # 先量文字尺寸
     tmp = tk.Label(parent, text=text, font=TEXT_FONT,
@@ -75,7 +93,7 @@ def _make_bubble(parent, text, side="right"):
 
     bw = min(BUBBLE_MAX, tw) + 2 * PAD
     bh = th + 2 * PAD
-    fill = GREEN if side == "right" else WHITE
+    fill = bubble_fill or (GREEN if side == "right" else WHITE)
     mid = bh / 2
 
     bf = tk.Frame(parent, bg=CHAT_BG)
@@ -108,15 +126,16 @@ def _make_bubble(parent, text, side="right"):
     return bf
 
 
-def _add_message(parent, text, side="right"):
+def _add_message(parent, text, side="right", avatar_text=None, bubble_fill=None):
     """在聊天区加一条消息：头像 + 气泡，按方向左右布局。"""
     row = tk.Frame(parent, bg=CHAT_BG)
     row.pack(fill="x", padx=10, pady=5)
     inner = tk.Frame(row, bg=CHAT_BG)
     inner.pack(anchor="e" if side == "right" else "w")
 
-    av = _make_avatar(inner, "我" if side == "right" else "AI", side)
-    bf = _make_bubble(inner, text, side)
+    avatar_text = avatar_text or ("我" if side == "right" else "AI")
+    av = _make_avatar(inner, avatar_text, side)
+    bf = _make_bubble(inner, text, side, bubble_fill=bubble_fill)
 
     if side == "right":
         bf.pack(side="left", padx=(0, 6))
@@ -159,17 +178,22 @@ def _scroll_area(root):
     inner = tk.Frame(canvas, bg=CHAT_BG)
     inner.bind("<Configure>",
                lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.create_window((0, 0), window=inner, anchor="nw")
+    content_id = canvas.create_window((0, 0), window=inner, anchor="nw")
     canvas.configure(yscrollcommand=scroll.set)
     canvas.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
 
-    # 鼠标滚轮滚动（仅绑定到本 canvas，避免 bind_all 跨解释器泄漏）
+    # 绑定在本窗口的 bindtag 上，使鼠标停在气泡文字或按钮上时也能滚动。
     def _on_mousewheel(event):
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    canvas.bind("<MouseWheel>", _on_mousewheel)
-    return inner
+    root.bind("<MouseWheel>", _on_mousewheel, add="+")
+    canvas.bind(
+        "<Configure>",
+        lambda e: canvas.itemconfigure(content_id, width=e.width),
+        add="+",
+    )
+    return inner, canvas
 
 
 def _build_choices(root, versions, on_choose):
@@ -177,8 +201,8 @@ def _build_choices(root, versions, on_choose):
     if not versions:
         return
 
-    _header(root)
-    inner = _scroll_area(root)
+    _header(root, title="AI 回复建议")
+    inner, _canvas = _scroll_area(root)
 
     # 顶部系统提示（微信灰色居中提示）
     sys_tip = tk.Label(
@@ -194,12 +218,18 @@ def _build_choices(root, versions, on_choose):
     # AI 引导气泡（收到，白）
     _add_message(
         inner,
-        f"已生成 {len(versions)} 个版本，点「发送」即回填微信输入框：",
+        f"已生成 {len(versions)} 个建议。点击「回填微信」只会填入输入框，不会自动发送。",
         side="left",
     )
 
     for i, v in enumerate(versions, 1):
-        bf = _add_message(inner, v, side="right")
+        tk.Label(
+            inner, text=f"AI 建议 {i}", bg=CHAT_BG, fg="#47718f",
+            font=SYS_FONT,
+        ).pack(anchor="w", padx=(58, 10), pady=(5, 0))
+        bf = _add_message(
+            inner, v, side="left", avatar_text="AI", bubble_fill=DRAFT_BG,
+        )
 
         def _copy(t=v):
             try:
@@ -207,26 +237,27 @@ def _build_choices(root, versions, on_choose):
             except Exception:
                 pass
 
-        def _send(t=v):
+        def _fill(t=v):
             choose(t)
 
         btns = tk.Frame(bf, bg=CHAT_BG)
-        btns.pack(anchor="e", pady=(4, 0))
+        btns.pack(anchor="w", pady=(4, 0))
         tk.Button(btns, text=f"复制", command=_copy, width=7,
                   bg=BTN_GREY, fg="#222222", relief="flat",
                   font=("Microsoft YaHei", 10)).pack(side="right", padx=2)
-        tk.Button(btns, text="发送", command=_send, width=7,
+        tk.Button(btns, text="回填微信", command=_fill, width=9,
                   bg=MINE, fg="white", relief="flat",
                   activebackground=MINE, font=("Microsoft YaHei", 10, "bold")
                   ).pack(side="right", padx=2)
 
     root.bind("<Escape>", lambda e: root.destroy())
+    return inner
 
 
 def _build_error(root, msg):
     """构建微信风格错误提示卡。"""
     _header(root, title="ai-reply-helper")
-    inner = _scroll_area(root)
+    inner, _canvas = _scroll_area(root)
 
     sys_tip = tk.Label(
         inner, text="提示", bg=CHAT_BG, fg="#9a9a9a", font=SYS_FONT,
@@ -263,7 +294,7 @@ def _wire_close(root, on_close):
 def show_choices(versions, on_choose, master=None, on_close=None):
     """弹出置顶小窗，展示多个润色版本（微信聊天框风格）。
 
-    on_choose(text): 用户点“发送”时回调，参数为选定文本；回调后窗口关闭。
+    on_choose(text): 用户点“回填微信”时回调；参数为选定文本，回调后窗口关闭。
     master: 传入则作为 master 的 Toplevel 构建（不另起 mainloop，由主线程驱动）；
             None 则自建 Tk 并 mainloop（无托盘兜底场景）。
     on_close: 窗口销毁时回调（如 tray.show_idle()）。
@@ -271,15 +302,23 @@ def show_choices(versions, on_choose, master=None, on_close=None):
     if not versions:
         return
     root = tk.Toplevel(master) if master is not None else tk.Tk()
-    root.title("ai-reply-helper")
+    root.title("ai-reply-helper - 回复建议")
     root.attributes("-topmost", True)
-    root.geometry("430x540")
+    root.geometry("450x560")
+    root.minsize(400, 360)
+    root.resizable(True, True)
     try:
         root.iconify()       # 防止闪烁，随后立刻恢复
         root.deiconify()
     except Exception:
         pass
-    _build_choices(root, versions, on_choose)
+    inner = _build_choices(root, versions, on_choose)
+    root.update_idletasks()
+    # 根据建议文本长度扩展窗口；超过屏幕可用高度时保留滚动区域。
+    wanted_height = inner.winfo_reqheight() + 58
+    max_height = max(360, root.winfo_screenheight() - 90)
+    height = min(max(560, wanted_height), max_height)
+    root.geometry(f"450x{height}")
     _wire_close(root, on_close)
     if master is None:
         root.mainloop()

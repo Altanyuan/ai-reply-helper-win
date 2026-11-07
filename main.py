@@ -33,8 +33,8 @@ log = logging.getLogger("polish")
 _lock = threading.Lock()
 _config_lock = threading.Lock()  # 防止配置页重复打开
 
-# 版本标识：每次启动写入日志，便于确认跑的是修复版（run_ui 弹框路由）
-APP_VERSION = "2026-09-25-wgc-4x"
+# 版本标识：每次启动写入日志，便于确认当前运行版本。
+APP_VERSION = "v2.0"
 
 _LOCK_PATH = paths.lock_path()
 

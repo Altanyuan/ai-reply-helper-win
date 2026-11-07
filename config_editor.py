@@ -3,9 +3,9 @@
 打开方式：**鼠标中键（滚轮按下）**任意位置（由 main.py 的全局鼠标监听触发）。
 
 页面结构
-    ┌ 顶栏：标题 + 「提示词 / 模型与 Key / 软件作者」三个页签 ──────┐
+    ┌ 左侧导航：「提示词 / 模型与 Key / 使用方法 / 软件作者」四个页面 ─┐
     │ 左栏：列表或说明（提示词 / 模型 / 作者引导）                  │
-    │ 右栏：对应内容（前两页为编辑表单，作者页为两张二维码卡片）    │
+    │ 右侧：提示词 / 模型列表与详情，或作者介绍与二维码            │
     └ 底栏：操作反馈（成功 / 失败 / 警告）+ 关闭 ────────────────┘
 
 设计要点
@@ -28,39 +28,41 @@ import config
 import key_utils
 import paths
 
-# ---- CodeBuddy 风格深色配色 ----
-BG = "#1e1e1e"
-PANEL = "#252526"
-CARD_BG = "#252526"
-ACTIVE_BG = "#2d3a2f"
-BORDER = "#3c3c3c"
-ACTIVE_BORDER = "#4ec9b0"
-TEXT = "#d4d4d4"
-MUTED = "#9da5b4"
-ACCENT = "#0e639c"
-ACCENT_HOVER = "#1177bb"
-SECONDARY = "#3a3d41"
-SECONDARY_HOVER = "#4a4d51"
-OK = "#4ec9b0"
-WARN = "#dcdcaa"
-BAD = "#f48771"
-DANGER = "#a1260d"
-DANGER_HOVER = "#c0301a"
-BADGE_BUILTIN_BG = "#3a3d41"
-BADGE_CUSTOM_BG = "#3b3552"
-ERR_BORDER = "#f48771"
+# ---- 微信风格浅色配色 ----
+BG = "#f5f6f7"
+PANEL = "#ffffff"
+CARD_BG = "#ffffff"
+ACTIVE_BG = "#e8f7ef"
+BORDER = "#e7e9eb"
+ACTIVE_BORDER = "#07c160"
+TEXT = "#222222"
+MUTED = "#7a7f85"
+ACCENT = "#07c160"
+ACCENT_HOVER = "#06ad56"
+SECONDARY = "#eef0f2"
+SECONDARY_HOVER = "#e1e4e7"
+OK = "#07a957"
+WARN = "#b7791f"
+BAD = "#d94841"
+DANGER = "#d94841"
+DANGER_HOVER = "#bd332d"
+BADGE_BUILTIN_BG = "#eef0f2"
+BADGE_CUSTOM_BG = "#e8f7ef"
+ERR_BORDER = "#d94841"
+FIELD_BG = "#fbfcfc"
+FIELD_BORDER = "#e1e6e3"
 
 # ---- 按钮禁用态与行内间距 ----
 # 禁用态：底色比正常态更暗、文字低对比，让「不可点」一目了然，
 # 而不是仅靠 Tk 默认的灰字（在深色主题下几乎看不出差别）。
-BTN_DISABLED_BG = "#2b2b2c"
-BTN_DISABLED_FG = "#5c5c5e"
+BTN_DISABLED_BG = "#f3f4f5"
+BTN_DISABLED_FG = "#a5a9ad"
 BTN_GAP = 8          # 同一行相邻按钮之间的水平间距（像素）
 
 DOT_SIZE = 18
-DOT_OFF_RING = "#5f6470"
-DOT_ON_RING = "#4ec9b0"
-DOT_ON_FILL = "#4ec9b0"
+DOT_OFF_RING = "#b9bec3"
+DOT_ON_RING = "#07c160"
+DOT_ON_FILL = "#07c160"
 
 LABEL_FONT = ("Microsoft YaHei", 10)
 TITLE_FONT = ("Microsoft YaHei", 13, "bold")
@@ -94,15 +96,19 @@ def _preview(text, n=72):
 def _mk_entry(parent, font=None):
     # width=1：让输入框只请求最小宽度，实际宽度交给 grid 的 sticky+weight 分配。
     # 否则 Entry 会按默认字符数要一大块地方，把右栏挤出窗口（实测过）。
-    return tk.Entry(parent, width=1, bg=PANEL, fg=TEXT,
-                    insertbackground="#aeafad", relief="solid",
-                    borderwidth=1, highlightthickness=1,
-                    highlightbackground=BORDER, highlightcolor=ACCENT,
+    return tk.Entry(parent, width=1, bg=FIELD_BG, fg=TEXT,
+                    insertbackground=TEXT, relief="flat",
+                    borderwidth=0, highlightthickness=1,
+                    highlightbackground=FIELD_BORDER, highlightcolor=ACCENT,
                     font=font or LABEL_FONT)
 
 
 def _mk_label(parent, text, fg=MUTED, font=None, **kw):
-    return tk.Label(parent, text=text, bg=BG, fg=fg, font=font or LABEL_FONT,
+    try:
+        bg = parent.cget("bg")
+    except Exception:
+        bg = BG
+    return tk.Label(parent, text=text, bg=bg, fg=fg, font=font or LABEL_FONT,
                     anchor="w", **kw)
 
 
@@ -182,7 +188,7 @@ def _mk_btn_row(parent, specs, row, bg=None, pady=(0, 0)):
     """把若干按钮排成**一行**：等宽、等间距，并随右栏宽度自适应收缩。
 
     为什么用 grid + uniform 权重，而不是 pack(side="left")：
-      pack 按各按钮的请求宽度依次排布，「删除 / 恢复默认 / 设为生效 / 保存」
+      pack 按各按钮的请求宽度依次排布，多个操作按钮会把内容区挤出窗口。
       四个加起来约 430px，会把右栏顶出窗口（旧版正因此拆成了两行）。
       改成 grid 均匀列后每个按钮平分可用宽度，窗口再窄也不会溢出；
       同时所有按钮等宽、间距一致，视觉上更整齐统一。
@@ -251,8 +257,10 @@ class _Editor:
         self.root = root
         self.editor_font = _pick_editor_font(root, 10)
         self.prompt_var = tk.StringVar(master=root)      # 选中的提示词 id
+        self.prompt_search_var = tk.StringVar(master=root)
         self.model_var = tk.StringVar(master=root)       # 选中的模型 id
         self._prompt_id = None                           # None = 正在新增
+        self._all_prompts = []
         self._model_id = None
         self._prompt_rows = []
         self._model_rows = []
@@ -263,6 +271,9 @@ class _Editor:
         self._author_job = None                          # 作者页延迟渲染的 after 任务
         self._closing = False                            # 关窗中：不再调度任何 after 任务
         self._build()
+        self.prompt_search_var.trace_add(
+            "write", lambda *_: self._apply_prompt_search(),
+        )
         self._reload_prompts()
         self._reload_models()
         self._switch_tab(tab)
@@ -270,34 +281,7 @@ class _Editor:
     # ================= 骨架 =================
 
     def _build(self):
-        # 顶栏
-        header = tk.Frame(self.root, bg=PANEL)
-        header.pack(fill="x")
-        tk.Frame(header, bg=ACCENT, width=4).pack(side="left", fill="y")
-        tk.Label(header, text="设置", bg=PANEL, fg="#ffffff",
-                 font=TITLE_FONT, padx=12, pady=10).pack(side="left")
-
-        # 页签（自绘，保持一致深色风格）
-        tabs = tk.Frame(header, bg=PANEL)
-        tabs.pack(side="left", padx=(18, 0))
-        self.tab_btns = {}
-        for key, label in (("prompts", "提示词"), ("models", "模型与 Key"),
-                           ("author", "软件作者")):
-            btn = tk.Label(tabs, text=label, bg=PANEL, fg=MUTED, font=NAME_FONT,
-                           padx=14, pady=6, cursor="hand2")
-            btn.pack(side="left", padx=(0, 4))
-            btn.bind("<Button-1>", lambda _e, k=key: self._switch_tab(k))
-            self.tab_btns[key] = btn
-
-        tk.Label(header, text="改完点保存即时生效 · 无需重启",
-                 bg=PANEL, fg=MUTED, font=SMALL_FONT,
-                 padx=12).pack(side="right")
-
-        # 底栏：必须在「内容区」之前 pack。
-        # 踩坑：内容区 body 用了 expand=True，若先 pack，它会吃掉全部剩余空间；
-        # 窗口高度不够时，后 pack 的底栏分不到位置，`winfo_ismapped()` 为 0，
-        # 表现为**整条底栏消失**（没有状态栏、没有关闭按钮、也没有公众号入口）。
-        # 先 pack 底栏可锁定其所需高度，内容区再占用剩下的空间。
+        # 底部状态条先布局，避免内容区抢占高度。
         bottom = tk.Frame(self.root, bg=PANEL)
         bottom.pack(fill="x", side="bottom")
         self.status = tk.Label(bottom, text="", bg=PANEL, fg=MUTED,
@@ -306,21 +290,41 @@ class _Editor:
         self.status.pack(side="left", fill="x", expand=True)
         _mk_btn(bottom, "关闭", self._on_close, "secondary", width=8).pack(
             side="right", padx=10, pady=5)
-        self._build_qr_entry(bottom)        # 「交流群 / 公众号」入口（在关闭左侧）
 
-        # 内容区（占满底栏之外的剩余空间）
-        self.body = tk.Frame(self.root, bg=BG)
-        self.body.pack(fill="both", expand=True)
+        shell = tk.Frame(self.root, bg=BG)
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(1, weight=1)
+        shell.rowconfigure(0, weight=1)
+        nav = tk.Frame(shell, bg="#f0f1f2", width=190)
+        nav.grid(row=0, column=0, sticky="ns")
+        nav.grid_propagate(False)
+        tk.Label(nav, text="设置", bg="#f0f1f2", fg=TEXT,
+                 font=TITLE_FONT, anchor="w", padx=20, pady=24).pack(fill="x")
+        self.nav_btns = {}
+        for key, label in (("prompts", "提示词"), ("models", "模型与 Key"),
+                           ("usage", "使用方法"), ("author", "软件作者")):
+            btn = tk.Label(nav, text=label, bg="#f0f1f2", fg=TEXT,
+                           font=LABEL_FONT, anchor="w", padx=20, pady=13,
+                           cursor="hand2")
+            btn.pack(fill="x", padx=(6, 0), pady=2)
+            btn.bind("<Button-1>", lambda _e, k=key: self._switch_tab(k))
+            self.nav_btns[key] = btn
+
+        self.body = tk.Frame(shell, bg=BG)
+        self.body.grid(row=0, column=1, sticky="nsew")
         self.tab_prompts = tk.Frame(self.body, bg=BG)
         self.tab_models = tk.Frame(self.body, bg=BG)
+        self.tab_usage = tk.Frame(self.body, bg=BG)
         self.tab_author = tk.Frame(self.body, bg=BG)
         self._build_prompts_tab()
         self._build_models_tab()
+        self._build_usage_tab()
         self._build_author_tab()
         # 页签名 → 内容容器，供 _switch_tab 统一切换（今后新增页签只需在此登记）
         self.tabs = {
             "prompts": self.tab_prompts,
             "models": self.tab_models,
+            "usage": self.tab_usage,
             "author": self.tab_author,
         }
 
@@ -330,10 +334,14 @@ class _Editor:
     def _switch_tab(self, key):
         if key not in getattr(self, "tabs", {}):
             key = "author"
-        for k, btn in self.tab_btns.items():
+        if key == getattr(self, "current_tab", None):
+            return
+        if not self._confirm_leave_current():
+            return
+        for k, btn in self.nav_btns.items():
             active = (k == key)
-            btn.configure(bg=CARD_BG if active else PANEL,
-                          fg=TEXT if active else MUTED)
+            btn.configure(bg=ACCENT if active else "#f0f1f2",
+                          fg="#ffffff" if active else TEXT)
         for frame in self.tabs.values():
             frame.pack_forget()
         self.tabs[key].pack(fill="both", expand=True)
@@ -351,14 +359,15 @@ class _Editor:
     def _save_current_tab(self):
         tab = getattr(self, "current_tab", "prompts")
         if tab == "prompts":
-            self._on_prompt_save()
+            self._on_prompt_save(activate=False)
         elif tab == "models":
             self._on_model_save()
         else:
-            self._flash("「软件作者」页无需保存，扫码加入交流群 / 关注公众号即可",
-                        "info")
+            self._flash("当前页面无需保存", "info")
 
     def _on_close(self):
+        if not self._confirm_leave_current():
+            return
         # 必须先竖标志再撤销：destroy 过程中控件会连发 <Configure>，
         # 那些回调会「补建」新的防抖任务，撤了也白撤（实测仍会报错）。
         self._closing = True
@@ -388,7 +397,7 @@ class _Editor:
         为什么必须做（踩坑）：窗口 destroy 之后，pending 的回调仍会被 Tk 触发，
         打出 `invalid command name "..." while executing "after" script` ——
         源码运行（run.bat 控制台）时刷一屏红字，看起来像程序崩了。
-        涉及到的地方：作者页延迟渲染、两张二维码的防抖重绘、底栏状态条复位。
+        涉及到的地方：作者页延迟渲染、二维码防抖重绘、底栏状态条复位。
         """
         self._cancel_author_job()
         for entry in getattr(self, "_qr_states", {}).values():
@@ -406,31 +415,6 @@ class _Editor:
             except Exception:
                 pass
             self._flash_job = None
-
-    # ---------- 底栏二维码入口（作者公众号 / 使用交流群）----------
-
-    def _build_qr_entry(self, parent):
-        """底栏二维码入口：点击弹大图，悬停浮出小预览。
-
-        pack(side="right") 的顺序是「先入队的贴最右」，因此下面的书写顺序
-        （交流群 → 作者公众号）在界面上呈现为「作者微信公众号 ｜ 使用交流群 ｜ 关闭」。
-
-        资源缺失的入口直接不创建 —— 与其留一个点了没反应的链接，
-        不如干净地不显示（打包漏带图片时就是这种情况）。
-        """
-        for asset, text in ((GROUP_QR_ASSET, "使用交流群"),
-                            (AUTHOR_QR_ASSET, "作者微信公众号")):
-            if not qr_available(asset):
-                continue
-            link = tk.Label(parent, text=text, bg=PANEL, fg=MUTED,
-                            font=SMALL_FONT, cursor="hand2", padx=10, pady=8)
-            link.pack(side="right")
-            link.bind("<Button-1>", lambda _e, a=asset: self._open_qr(a))
-            link.bind("<Enter>",
-                      lambda _e, w=link, a=asset: self._on_qr_enter(w, a),
-                      add="+")
-            link.bind("<Leave>", lambda _e, w=link: self._on_qr_leave(w),
-                      add="+")
 
     def _on_qr_enter(self, widget, asset):
         try:
@@ -465,52 +449,75 @@ class _Editor:
     def _build_prompts_tab(self):
         wrap = tk.Frame(self.tab_prompts, bg=BG)
         wrap.pack(fill="both", expand=True)
-        wrap.columnconfigure(0, weight=2, minsize=250)
-        wrap.columnconfigure(1, weight=3, minsize=330)
+        wrap.columnconfigure(0, weight=1)
+        wrap.columnconfigure(1, weight=1)
         wrap.rowconfigure(1, weight=1)
+        self.prompt_wrap = wrap
+        self.prompt_view = "list"
 
         # 状态条
         self.prompt_status = tk.Label(
             wrap, text="", bg=BG, fg=OK, font=LABEL_FONT, anchor="w",
             justify="left", wraplength=560)
         self.prompt_status.grid(row=0, column=0, columnspan=2, sticky="ew",
-                                padx=14, pady=(10, 6))
+                                padx=24, pady=(20, 10))
 
         # 左栏：列表
         left = tk.Frame(wrap, bg=BG)
-        left.grid(row=1, column=0, sticky="nsew", padx=(14, 7), pady=(0, 12))
+        left.grid(row=1, column=0, columnspan=2, sticky="nsew",
+                  padx=24, pady=(58, 20))
+        self.prompt_list_panel = left
         bar = tk.Frame(left, bg=BG)
         bar.pack(fill="x", pady=(0, 6))
         _mk_btn(bar, "+ 新增提示词", self._on_prompt_new, "primary").pack(side="left")
+        tk.Label(bar, text="搜索", bg=BG, fg=MUTED,
+                 font=SMALL_FONT).pack(side="left", padx=(10, 4))
+        self.prompt_search_entry = tk.Entry(
+            bar, textvariable=self.prompt_search_var, width=1,
+            bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, relief="flat",
+            borderwidth=0, highlightthickness=1,
+            highlightbackground=FIELD_BORDER, highlightcolor=ACCENT,
+            font=LABEL_FONT,
+        )
+        self.prompt_search_entry.pack(side="left", fill="x", expand=True)
+        self.prompt_search_entry.bind(
+            "<Escape>", lambda _e: self.prompt_search_var.set(""),
+        )
         self.plist = _ScrollList(left)
         self.plist.outer.pack(fill="both", expand=True)
 
         # 右栏：表单
         right = tk.Frame(wrap, bg=PANEL, padx=14, pady=12)
-        right.grid(row=1, column=1, sticky="nsew", padx=(7, 14), pady=(0, 12))
+        right.grid(row=0, column=0, columnspan=2, rowspan=2, sticky="nsew",
+                   padx=24, pady=(20, 20))
+        self.prompt_detail_panel = right
         right.columnconfigure(0, weight=1)
-        self.p_form_title = tk.Label(right, text="编辑提示词", bg=PANEL, fg=TEXT,
+        head = tk.Frame(right, bg=PANEL)
+        head.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        _mk_btn(head, "‹ 返回列表", self._show_prompt_list, "secondary").pack(side="left")
+        self.p_form_title = tk.Label(head, text="编辑提示词", bg=PANEL, fg=TEXT,
                                      font=NAME_FONT, anchor="w")
-        self.p_form_title.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.p_form_title.pack(side="left", padx=12)
 
         _mk_label(right, "提示词名称", MUTED, SMALL_FONT).grid(
-            row=1, column=0, sticky="ew")
+            row=1, column=0, sticky="ew", pady=(0, 3))
         self.p_name = _mk_entry(right)
-        self.p_name.grid(row=2, column=0, sticky="ew", pady=(2, 8), ipady=4)
+        self.p_name.grid(row=2, column=0, sticky="ew", pady=(0, 12), ipady=6)
 
         _mk_label(right, "一句话说明（可选）", MUTED, SMALL_FONT).grid(
-            row=3, column=0, sticky="ew")
+            row=3, column=0, sticky="ew", pady=(0, 3))
         self.p_desc = _mk_entry(right)
-        self.p_desc.grid(row=4, column=0, sticky="ew", pady=(2, 8), ipady=4)
+        self.p_desc.grid(row=4, column=0, sticky="ew", pady=(0, 12), ipady=6)
 
         _mk_label(right, "提示词内容（角色与风格设定）", MUTED, SMALL_FONT).grid(
-            row=5, column=0, sticky="ew")
-        self.p_content = tk.Text(right, height=10, width=1, bg=BG, fg=TEXT,
-                                 insertbackground="#aeafad", relief="solid",
-                                 borderwidth=1, highlightthickness=1,
-                                 highlightbackground=BORDER,
+            row=5, column=0, sticky="ew", pady=(0, 3))
+        self.p_content = tk.Text(right, height=10, width=1, bg=FIELD_BG, fg=TEXT,
+                                 insertbackground=TEXT, relief="flat",
+                                 borderwidth=0, highlightthickness=1,
+                                 highlightbackground=FIELD_BORDER,
+                                 highlightcolor=ACCENT,
                                  font=self.editor_font, wrap="word",
-                                 padx=8, pady=6,
+                                 padx=12, pady=10,
                                  selectbackground=ACCENT,
                                  selectforeground="#ffffff")
         self.p_content.grid(row=6, column=0, sticky="nsew", pady=(2, 4))
@@ -530,24 +537,63 @@ class _Editor:
             right,
             [("删除", self._on_prompt_delete, "danger"),
              ("恢复默认", self._on_prompt_reset, "secondary"),
-             ("设为生效", self._on_prompt_activate, "secondary"),
-             ("保存", self._on_prompt_save, "primary")],
+             ("保存并设为当前", lambda: self._on_prompt_save(activate=True), "secondary"),
+             ("仅保存", self._on_prompt_save, "primary")],
             row=8)
+        right.grid_remove()
+
+    def _show_prompt_list(self):
+        if not self._confirm_leave_current():
+            return
+        self.prompt_view = "list"
+        self.prompt_detail_panel.grid_remove()
+        self.prompt_status.grid(row=0, column=0, columnspan=2, sticky="ew",
+                                padx=24, pady=(20, 10))
+        self.prompt_list_panel.grid(row=1, column=0, columnspan=2, sticky="nsew",
+                                   padx=24, pady=(58, 20))
+
+    def _show_prompt_detail(self):
+        self.prompt_view = "detail"
+        self.prompt_status.grid_remove()
+        self.prompt_list_panel.grid_remove()
+        self.prompt_detail_panel.grid(row=0, column=0, columnspan=2, rowspan=2, sticky="nsew",
+                                      padx=24, pady=20)
 
     def _reload_prompts(self, keep_id=None):
         prompts = config.get_prompts()
+        self._all_prompts = prompts
         active_id = config.get_active_prompt_id()
-        self.prompt_status.configure(
-            text=f"当前生效：{self._name_of_prompt(active_id)}"
-                 f"　｜　共 {len(prompts)} 条"
-                 f"（内置 {sum(1 for p in prompts if p.get('builtin'))}"
-                 f" / 自定义 {sum(1 for p in prompts if not p.get('builtin'))}）",
-            fg=OK)
-        self._render_prompt_list(prompts, active_id)
+        self._apply_prompt_search()
 
         target = keep_id or self._prompt_id or active_id
         ids = [p.get("id") for p in prompts]
-        self._select_prompt(target if target in ids else (ids[0] if ids else None))
+        self._select_prompt(target if target in ids else (ids[0] if ids else None),
+                            show_detail=False)
+
+    def _apply_prompt_search(self):
+        """只筛选左侧列表，不切换右侧当前编辑项，避免丢失未保存输入。"""
+        prompts = self._all_prompts
+        query = self.prompt_search_var.get().strip().casefold()
+        filtered = [
+            p for p in prompts
+            if not query or query in " ".join((
+                str(p.get("name", "")),
+                str(p.get("desc", "")),
+                str(p.get("content", "")),
+            )).casefold()
+        ]
+        active_id = config.get_active_prompt_id()
+        builtin_count = sum(1 for p in prompts if p.get("builtin"))
+        custom_count = len(prompts) - builtin_count
+        status = (
+            f"当前生效：{self._name_of_prompt(active_id)}"
+            f"　｜　共 {len(prompts)} 条"
+            f"（内置 {builtin_count} / 自定义 {custom_count}）"
+        )
+        if query:
+            status += f"　｜　匹配 {len(filtered)} 条"
+        self.prompt_status.configure(text=status, fg=OK)
+        self._render_prompt_list(filtered, active_id)
 
     def _name_of_prompt(self, pid):
         for p in config.get_prompts():
@@ -559,7 +605,9 @@ class _Editor:
         self.plist.clear()
         self._prompt_rows = []
         if not prompts:
-            _mk_label(self.plist.inner, "（还没有任何提示词）", MUTED,
+            query = self.prompt_search_var.get().strip()
+            empty_text = "没有匹配的提示词；按 Esc 清除搜索" if query else "（还没有任何提示词）"
+            _mk_label(self.plist.inner, empty_text, MUTED,
                       SMALL_FONT).pack(padx=10, pady=10)
             return
         for p in prompts:
@@ -570,50 +618,84 @@ class _Editor:
         is_builtin = bool(p.get("builtin", False))
         is_active = (pid == active_id)
 
-        frame = tk.Frame(self.plist.inner, bg=BORDER, padx=1)
+        row_bg = ACTIVE_BG if is_active else CARD_BG
+        frame = tk.Frame(self.plist.inner,
+                         bg=ACTIVE_BORDER if is_active else BORDER, padx=1)
         frame.pack(fill="x", pady=3, padx=2)
-        body = tk.Frame(frame, bg=CARD_BG)
+        body = tk.Frame(frame, bg=row_bg)
         body.pack(fill="x")
-        bar = tk.Frame(body, bg=ACTIVE_BORDER if is_active else BORDER, width=4)
+        bar = tk.Frame(body, bg=ACTIVE_BORDER if is_active else BORDER, width=5)
         bar.pack(side="left", fill="y")
-        dot = tk.Canvas(body, width=DOT_SIZE, height=DOT_SIZE, bg=CARD_BG,
-                        highlightthickness=0, bd=0, cursor="hand2")
-        dot.pack(side="left", padx=(10, 6), pady=10)
-        mid = tk.Frame(body, bg=CARD_BG)
-        mid.pack(side="left", fill="x", expand=True, pady=7)
+        action_button = None
+        if not is_active:
+            action_button = _mk_btn(
+                body, "设为当前",
+                lambda prompt_id=pid: self._activate_prompt_from_list(prompt_id),
+                "primary", pad=9)
+            action_button.configure(font=SMALL_FONT, pady=4)
+            action_button.pack(side="right", padx=14, pady=8)
+        mid = tk.Frame(body, bg=row_bg)
+        mid.pack(side="left", fill="x", expand=True, padx=(14, 12), pady=10)
 
-        top = tk.Frame(mid, bg=CARD_BG)
+        top = tk.Frame(mid, bg=row_bg)
         top.pack(fill="x")
-        name_lbl = tk.Label(top, text=p.get("name", "未命名"), bg=CARD_BG,
+        name_lbl = tk.Label(top, text=p.get("name", "未命名"), bg=row_bg,
                             fg=TEXT, font=LABEL_FONT, anchor="w")
         name_lbl.pack(side="left")
         tk.Label(top, text="内置" if is_builtin else "自定义",
                  bg=BADGE_BUILTIN_BG if is_builtin else BADGE_CUSTOM_BG,
                  fg=TEXT, font=SMALL_FONT, padx=5, pady=1).pack(side="left",
                                                                 padx=(6, 0))
-        active_tag = tk.Label(top, text="✓ 生效", bg=CARD_BG, fg=OK,
-                              font=SMALL_FONT)
+        active_tag = tk.Label(top, text="✓ 当前使用", bg="#d8f3e4", fg=OK,
+                              font=SMALL_FONT, padx=7, pady=2)
         if is_active:
             active_tag.pack(side="left", padx=(6, 0))
 
-        # wraplength 固定：列表文字的请求宽度不能超过左栏，否则会把右栏挤走
         desc = p.get("desc", "")
         if desc:
-            tk.Label(mid, text=_preview(desc, 40), bg=CARD_BG, fg=MUTED,
-                     font=SMALL_FONT, anchor="w", justify="left",
-                     wraplength=200).pack(fill="x")
-        tk.Label(mid, text=_preview(p.get("content", ""), 40), bg=CARD_BG,
-                 fg=MUTED, font=SMALL_FONT, anchor="w", justify="left",
-                 wraplength=200).pack(fill="x")
+            desc_lbl = tk.Label(mid, text=_preview(desc, 40), bg=row_bg,
+                                fg=MUTED, font=SMALL_FONT, anchor="w",
+                                justify="left", wraplength=160)
+            desc_lbl.pack(fill="x")
+            _bind_wraplength(desc_lbl, mid, pad=2)
+        content_lbl = tk.Label(
+            mid, text=_preview(p.get("content", ""), 40), bg=row_bg,
+            fg=MUTED, font=SMALL_FONT, anchor="w", justify="left",
+            wraplength=160,
+        )
+        content_lbl.pack(fill="x")
+        _bind_wraplength(content_lbl, mid, pad=2)
 
         def _pick(_e, pid=pid):
             self._select_prompt(pid)
-        for w in (frame, body, bar, dot, mid, name_lbl):
-            w.bind("<Button-1>", _pick)
+        def _bind_pick(widget):
+            if widget is action_button:
+                return
+            widget.bind("<Button-1>", _pick, add="+")
+            for child in widget.winfo_children():
+                _bind_pick(child)
+        _bind_pick(frame)
 
-        self._draw_dot(dot, is_active, CARD_BG)
+        if not is_active:
+            card_widgets = [frame, body, mid, top, name_lbl, content_lbl]
+            if desc:
+                card_widgets.append(desc_lbl)
+
+            def _hover(_event=None, hovering=True):
+                color = "#f7faf8" if hovering else CARD_BG
+                frame.configure(bg="#c8d2cc" if hovering else BORDER)
+                for widget in card_widgets[1:]:
+                    try:
+                        widget.configure(bg=color)
+                    except Exception:
+                        pass
+
+            for widget in card_widgets:
+                widget.bind("<Enter>", lambda e: _hover(e, True), add="+")
+                widget.bind("<Leave>", lambda e: _hover(e, False), add="+")
+
         self._prompt_rows.append({"id": pid, "frame": frame, "bar": bar,
-                                  "body": body, "dot": dot})
+                                  "body": body, "active": is_active})
 
     def _draw_dot(self, canvas, active, bg):
         try:
@@ -631,7 +713,13 @@ class _Editor:
         except Exception:
             pass
 
-    def _select_prompt(self, pid):
+    def _select_prompt(self, pid, show_detail=True, skip_guard=False):
+        if (show_detail and self.prompt_view == "detail"
+                and pid == self._prompt_id):
+            return
+        if (show_detail and not skip_guard and self.prompt_view == "detail"
+                and not self._confirm_leave_current()):
+            return
         self._prompt_id = pid
         self.prompt_var.set(pid or "")
         p = self._find_prompt(pid)
@@ -642,24 +730,40 @@ class _Editor:
             self.p_content.delete("1.0", "end")
             self._clear_field_errors()
             self._sync_prompt_buttons()
-            return
-        builtin = "（内置）" if p.get("builtin") else ""
-        self.p_form_title.configure(text=f"编辑提示词{builtin}")
-        self.p_name.delete(0, "end")
-        self.p_name.insert(0, p.get("name", ""))
-        self.p_desc.delete(0, "end")
-        self.p_desc.insert(0, p.get("desc", ""))
-        self.p_content.delete("1.0", "end")
-        self.p_content.insert("1.0", p.get("content", ""))
+            self._refresh_prompt_selection()
+            self._prompt_snapshot = ("", "", "")
+        else:
+            builtin = "（内置）" if p.get("builtin") else ""
+            self.p_form_title.configure(text=f"编辑提示词{builtin}")
+            self.p_name.delete(0, "end")
+            self.p_name.insert(0, p.get("name", ""))
+            self.p_desc.delete(0, "end")
+            self.p_desc.insert(0, p.get("desc", ""))
+            self.p_content.delete("1.0", "end")
+            self.p_content.insert("1.0", p.get("content", ""))
+            self._prompt_snapshot = (p.get("name", ""), p.get("desc", ""),
+                                     p.get("content", ""))
         self._clear_field_errors()
         self._sync_prompt_buttons()
+        self._refresh_prompt_selection()
+        if show_detail:
+            self._show_prompt_detail()
+
+    def _refresh_prompt_selection(self):
+        """把绿色边框留给真正生效的提示词；编辑选择不冒充启用状态。"""
+        for row in self._prompt_rows:
+            active = row.get("active", False)
+            try:
+                row["frame"].configure(bg=ACTIVE_BORDER if active else BORDER)
+            except Exception:
+                pass
 
     def _sync_prompt_buttons(self):
         """按当前选中项刷新提示词页四个按钮的可用态。
 
         - 删除：内置项不可删；新增模式（未选中）也没有可删对象。
         - 恢复默认：只对内置项才成立。
-        - 设为生效：本就是生效项、或尚未保存时都无需再点。
+        - 保存并设为当前：当前项不需要重复设置；新增项也可保存后立即启用。
         - 保存：始终可用（新增与修改都靠它落盘）。
         这样用户从按钮的明暗就能直接看出「这一步能不能做」，
         不必先点一下再被底栏的提示语告知。
@@ -670,7 +774,7 @@ class _Editor:
         is_active = bool(pid) and pid == config.get_active_prompt_id()
         _set_btn_enabled(self.btn_p_delete, bool(p) and not is_builtin)
         _set_btn_enabled(self.btn_p_reset, is_builtin)
-        _set_btn_enabled(self.btn_p_activate, bool(p) and not is_active)
+        _set_btn_enabled(self.btn_p_activate, not is_active)
         _set_btn_enabled(self.btn_p_save, True)
 
     def _find_prompt(self, pid):
@@ -681,18 +785,27 @@ class _Editor:
                 return p
         return None
 
+    def _activate_prompt_from_list(self, pid):
+        """从列表直接启用已保存的提示词，不进入编辑页。"""
+        try:
+            config.set_active_prompt(pid)
+            self._reload_prompts(keep_id=pid)
+            self._flash(f"已切换生效提示词：{self._name_of_prompt(pid)}", "ok")
+        except Exception as e:
+            self._flash(f"切换失败：{e}", "err")
+
     def _on_prompt_new(self):
         self._select_prompt(None)
         self.p_name.focus_set()
         self._flash("正在新增提示词：填写名称与内容后点「保存」", "info")
 
-    def _on_prompt_save(self):
+    def _on_prompt_save(self, activate=False):
         name = self.p_name.get().strip()
         content = self.p_content.get("1.0", "end").strip()
         desc = self.p_desc.get().strip()
         if not self._validate([(self.p_name, name, "请填写提示词名称"),
                                (self.p_content, content, "请填写提示词内容")]):
-            return
+            return False
         try:
             if self._prompt_id:
                 config.update_prompt(self._prompt_id, name, content, desc)
@@ -700,11 +813,16 @@ class _Editor:
                 keep = self._prompt_id
             else:
                 keep = config.add_prompt(name, content, desc)
-                msg = f"已新增提示词「{name}」（点「设为生效」才会使用它）"
+                msg = f"已新增提示词「{name}」"
+            if activate:
+                config.set_active_prompt(keep)
+                msg += "，并已设为当前"
             self._reload_prompts(keep_id=keep)
             self._flash(msg, "ok")
+            return True
         except Exception as e:
             self._flash(f"保存失败：{e}", "err")
+            return False
 
     def _on_prompt_reset(self):
         pid = self._prompt_id
@@ -741,31 +859,29 @@ class _Editor:
         self._flash(f"已删除提示词「{p.get('name')}」", "ok")
 
     def _on_prompt_activate(self):
-        pid = self._prompt_id
-        if not pid:
-            self._flash("请先在左侧选中一条已保存的提示词", "warn")
-            return
-        config.set_active_prompt(pid)
-        self._reload_prompts(keep_id=pid)
-        self._flash(f"已切换生效提示词：{self._name_of_prompt(pid)}", "ok")
+        return self._on_prompt_save(activate=True)
 
     # ================= 模型与 Key 页签 =================
 
     def _build_models_tab(self):
         wrap = tk.Frame(self.tab_models, bg=BG)
         wrap.pack(fill="both", expand=True)
-        wrap.columnconfigure(0, weight=2, minsize=250)
-        wrap.columnconfigure(1, weight=3, minsize=330)
+        wrap.columnconfigure(0, weight=1)
+        wrap.columnconfigure(1, weight=1)
         wrap.rowconfigure(1, weight=1)
+        self.model_wrap = wrap
+        self.model_view = "list"
 
         self.model_status = tk.Label(wrap, text="", bg=BG, fg=OK,
                                      font=LABEL_FONT, anchor="w", justify="left",
                                      wraplength=560)
         self.model_status.grid(row=0, column=0, columnspan=2, sticky="ew",
-                               padx=14, pady=(10, 6))
+                               padx=24, pady=(20, 10))
 
         left = tk.Frame(wrap, bg=BG)
-        left.grid(row=1, column=0, sticky="nsew", padx=(14, 7), pady=(0, 12))
+        left.grid(row=1, column=0, columnspan=2, sticky="nsew",
+                  padx=24, pady=(58, 20))
+        self.model_list_panel = left
         bar = tk.Frame(left, bg=BG)
         bar.pack(fill="x", pady=(0, 6))
         _mk_btn(bar, "+ 新增模型", self._on_model_new, "primary").pack(side="left")
@@ -773,11 +889,16 @@ class _Editor:
         self.mlist.outer.pack(fill="both", expand=True)
 
         right = tk.Frame(wrap, bg=PANEL, padx=14, pady=12)
-        right.grid(row=1, column=1, sticky="nsew", padx=(7, 14), pady=(0, 12))
+        right.grid(row=0, column=0, columnspan=2, rowspan=2, sticky="nsew",
+                   padx=24, pady=(20, 20))
+        self.model_detail_panel = right
         right.columnconfigure(0, weight=1)
-        self.m_form_title = tk.Label(right, text="编辑模型", bg=PANEL, fg=TEXT,
+        head = tk.Frame(right, bg=PANEL)
+        head.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        _mk_btn(head, "‹ 返回列表", self._show_model_list, "secondary").pack(side="left")
+        self.m_form_title = tk.Label(head, text="编辑模型", bg=PANEL, fg=TEXT,
                                      font=NAME_FONT, anchor="w")
-        self.m_form_title.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.m_form_title.pack(side="left", padx=12)
 
         _mk_label(right, "配置名称（自己看的备注名）", MUTED, SMALL_FONT).grid(
             row=1, column=0, sticky="ew")
@@ -806,10 +927,10 @@ class _Editor:
                                  font=SMALL_FONT)
         self.key_hint.pack(side="right")
 
-        self.m_key = tk.Entry(right, bg=PANEL, fg=TEXT,
-                              insertbackground="#aeafad", relief="solid",
-                              borderwidth=1, highlightthickness=1,
-                              highlightbackground=BORDER,
+        self.m_key = tk.Entry(right, bg=FIELD_BG, fg=TEXT,
+                              insertbackground=TEXT, relief="flat",
+                              borderwidth=0, highlightthickness=1,
+                              highlightbackground=FIELD_BORDER,
                               highlightcolor=ACCENT, font=MONO_FONT, show="•")
         self.m_key.grid(row=8, column=0, sticky="ew", pady=(2, 4), ipady=4)
 
@@ -834,6 +955,24 @@ class _Editor:
              ("设为生效", self._on_model_activate, "secondary"),
              ("保存", self._on_model_save, "primary")],
             row=10)
+        right.grid_remove()
+
+    def _show_model_list(self):
+        if not self._confirm_leave_current():
+            return
+        self.model_view = "list"
+        self.model_detail_panel.grid_remove()
+        self.model_status.grid(row=0, column=0, columnspan=2, sticky="ew",
+                               padx=24, pady=(20, 10))
+        self.model_list_panel.grid(row=1, column=0, columnspan=2, sticky="nsew",
+                                   padx=24, pady=(58, 20))
+
+    def _show_model_detail(self):
+        self.model_view = "detail"
+        self.model_status.grid_remove()
+        self.model_list_panel.grid_remove()
+        self.model_detail_panel.grid(row=0, column=0, columnspan=2, rowspan=2, sticky="nsew",
+                                     padx=24, pady=20)
 
     def _reload_models(self, keep_id=None):
         models = config.get_models()
@@ -848,7 +987,8 @@ class _Editor:
 
         ids = [m.get("id") for m in models]
         target = keep_id or self._model_id or active_id
-        self._select_model(target if target in ids else (ids[0] if ids else None))
+        self._select_model(target if target in ids else (ids[0] if ids else None),
+                           show_detail=False)
 
     def _render_model_list(self, models, active_id):
         self.mlist.clear()
@@ -865,46 +1005,99 @@ class _Editor:
         is_active = (mid == active_id)
         has_key = bool(m.get("api_key"))
 
-        frame = tk.Frame(self.mlist.inner, bg=BORDER, padx=1)
+        row_bg = ACTIVE_BG if is_active else CARD_BG
+        frame = tk.Frame(self.mlist.inner,
+                         bg=ACTIVE_BORDER if is_active else BORDER, padx=1)
         frame.pack(fill="x", pady=3, padx=2)
-        body = tk.Frame(frame, bg=CARD_BG)
+        body = tk.Frame(frame, bg=row_bg)
         body.pack(fill="x")
-        bar = tk.Frame(body, bg=ACTIVE_BORDER if is_active else BORDER, width=4)
+        bar = tk.Frame(body, bg=ACTIVE_BORDER if is_active else BORDER, width=5)
         bar.pack(side="left", fill="y")
-        dot = tk.Canvas(body, width=DOT_SIZE, height=DOT_SIZE, bg=CARD_BG,
-                        highlightthickness=0, bd=0, cursor="hand2")
-        dot.pack(side="left", padx=(10, 6), pady=10)
-        box = tk.Frame(body, bg=CARD_BG)
-        box.pack(side="left", fill="x", expand=True, pady=7)
+        action_button = None
+        if not is_active:
+            action_button = _mk_btn(
+                body, "设为当前" if has_key else "需配置 Key",
+                lambda model_id=mid: self._activate_model_from_list(model_id),
+                "primary" if has_key else "secondary", pad=9)
+            action_button.configure(font=SMALL_FONT, pady=4)
+            action_button.pack(side="right", padx=14, pady=8)
+            if not has_key:
+                _set_btn_enabled(action_button, False)
+        box = tk.Frame(body, bg=row_bg)
+        box.pack(side="left", fill="x", expand=True, padx=(14, 12), pady=10)
 
-        top = tk.Frame(box, bg=CARD_BG)
+        top = tk.Frame(box, bg=row_bg)
         top.pack(fill="x")
-        name_lbl = tk.Label(top, text=m.get("name", "未命名模型"), bg=CARD_BG,
+        name_lbl = tk.Label(top, text=m.get("name", "未命名模型"), bg=row_bg,
                             fg=TEXT, font=LABEL_FONT, anchor="w")
         name_lbl.pack(side="left")
+        active_tag = None
         if is_active:
-            tk.Label(top, text="✓ 生效", bg=CARD_BG, fg=OK,
-                     font=SMALL_FONT).pack(side="left", padx=(6, 0))
+            active_tag = tk.Label(top, text="✓ 当前使用", bg="#d8f3e4", fg=OK,
+                                  font=SMALL_FONT, padx=7, pady=2)
+            active_tag.pack(side="left", padx=(6, 0))
+        key_tag = None
         if not has_key:
-            tk.Label(top, text="未配置 Key", bg=CARD_BG, fg=WARN,
-                     font=SMALL_FONT).pack(side="left", padx=(6, 0))
+            key_tag = tk.Label(top, text="未配置 Key", bg="#fff4df", fg=WARN,
+                               font=SMALL_FONT, padx=6, pady=2)
+            key_tag.pack(side="left", padx=(6, 0))
 
-        tk.Label(box, text=m.get("model", "") or "（未填写模型名）", bg=CARD_BG,
-                 fg=MUTED, font=SMALL_FONT, anchor="w", justify="left",
-                 wraplength=200).pack(fill="x")
-        tk.Label(box, text=key_utils.mask(m.get("api_key")), bg=CARD_BG,
-                 fg=MUTED, font=MONO_FONT, anchor="w").pack(fill="x")
+        model_lbl = tk.Label(box, text=m.get("model", "") or "（未填写模型名）",
+                             bg=row_bg, fg=MUTED, font=SMALL_FONT,
+                             anchor="w", justify="left", wraplength=200)
+        model_lbl.pack(fill="x")
+        key_lbl = tk.Label(box, text=key_utils.mask(m.get("api_key")),
+                           bg=row_bg, fg=MUTED, font=MONO_FONT, anchor="w")
+        key_lbl.pack(fill="x")
 
         def _pick(_e, mid=mid):
             self._select_model(mid)
-        for w in (frame, body, bar, dot, box, name_lbl):
-            w.bind("<Button-1>", _pick)
+        def _bind_pick(widget):
+            if widget is action_button:
+                return
+            widget.bind("<Button-1>", _pick, add="+")
+            for child in widget.winfo_children():
+                _bind_pick(child)
+        _bind_pick(frame)
 
-        self._draw_dot(dot, is_active, CARD_BG)
+        if not is_active:
+            card_widgets = [frame, body, box, top, name_lbl, model_lbl, key_lbl]
+
+            def _hover(_event=None, hovering=True):
+                color = "#f7faf8" if hovering else CARD_BG
+                frame.configure(bg="#c8d2cc" if hovering else BORDER)
+                for widget in card_widgets[1:]:
+                    try:
+                        widget.configure(bg=color)
+                    except Exception:
+                        pass
+
+            for widget in card_widgets:
+                widget.bind("<Enter>", lambda e: _hover(e, True), add="+")
+                widget.bind("<Leave>", lambda e: _hover(e, False), add="+")
+
         self._model_rows.append({"id": mid, "frame": frame, "bar": bar,
-                                 "body": body, "dot": dot})
+                                 "body": body, "active": is_active})
 
-    def _select_model(self, mid):
+    def _activate_model_from_list(self, mid):
+        """从列表直接切换到已配置 Key 的模型。"""
+        try:
+            ok, msg = config.set_active_model(mid)
+            if not ok:
+                self._flash(msg, "warn")
+                return
+            self._reload_models(keep_id=mid)
+            self._flash(msg, "ok")
+        except Exception as e:
+            self._flash(f"切换失败：{e}", "err")
+
+    def _select_model(self, mid, show_detail=True, skip_guard=False):
+        if (show_detail and self.model_view == "detail"
+                and mid == self._model_id):
+            return
+        if (show_detail and not skip_guard and self.model_view == "detail"
+                and not self._confirm_leave_current()):
+            return
         self._model_id = mid
         self.model_var.set(mid or "")
         m = self._find_model(mid)
@@ -918,26 +1111,32 @@ class _Editor:
             self.m_key.delete(0, "end")
             self._set_key_visible(False)
             self.key_hint.configure(text="")
+            self._model_snapshot = ("", config.DEFAULTS["api_base"],
+                                    config.DEFAULTS["model"], "")
             self._clear_field_errors()
             self._sync_model_buttons()
-            return
-        self.m_form_title.configure(text="编辑模型"
-                                        + ("（当前生效）" if
-                                           mid == config.get_active_model_id() else ""))
-        self.m_name.delete(0, "end")
-        self.m_name.insert(0, m.get("name", ""))
-        self.m_base.delete(0, "end")
-        self.m_base.insert(0, m.get("api_base", ""))
-        self.m_model.delete(0, "end")
-        self.m_model.insert(0, m.get("model", ""))
-        self.m_key.delete(0, "end")
-        self.m_key.insert(0, m.get("api_key", ""))
-        self._set_key_visible(False)
-        self.key_hint.configure(
-            text=("已保存：" + key_utils.mask(m.get("api_key"))) if m.get("api_key")
-            else "尚未配置 Key")
+        else:
+            self.m_form_title.configure(text="编辑模型"
+                                            + ("（当前生效）" if
+                                               mid == config.get_active_model_id() else ""))
+            self.m_name.delete(0, "end")
+            self.m_name.insert(0, m.get("name", ""))
+            self.m_base.delete(0, "end")
+            self.m_base.insert(0, m.get("api_base", ""))
+            self.m_model.delete(0, "end")
+            self.m_model.insert(0, m.get("model", ""))
+            self.m_key.delete(0, "end")
+            self.m_key.insert(0, m.get("api_key", ""))
+            self._set_key_visible(False)
+            self.key_hint.configure(
+                text=("已保存：" + key_utils.mask(m.get("api_key"))) if m.get("api_key")
+                else "尚未配置 Key")
+            self._model_snapshot = (m.get("name", ""), m.get("api_base", ""),
+                                    m.get("model", ""), m.get("api_key", ""))
         self._clear_field_errors()
         self._sync_model_buttons()
+        if show_detail:
+            self._show_model_detail()
 
     def _sync_model_buttons(self):
         """按当前选中项刷新模型页四个按钮的可用态。
@@ -945,7 +1144,7 @@ class _Editor:
         - 删除：只有已保存的模型才可删（新增模式下无可删对象）。
         - 测试连接：仅在测试进行中禁用；未填 Key 时仍可点，
           由字段标红给出更明确的缺项提示（比直接禁用更利于排查）。
-        - 设为生效：本就是生效项、或尚未保存时无需再点。
+        - 设为生效：当前项不需要重复设置；新增配置可保存后立即启用。
         - 保存：始终可用。
         """
         mid = self._model_id
@@ -953,7 +1152,7 @@ class _Editor:
         is_active = bool(mid) and mid == config.get_active_model_id()
         _set_btn_enabled(self.btn_m_delete, bool(m))
         _set_btn_enabled(self.test_btn, not self._testing)
-        _set_btn_enabled(self.btn_m_activate, bool(m) and not is_active)
+        _set_btn_enabled(self.btn_m_activate, not is_active)
         _set_btn_enabled(self.btn_m_save, True)
 
     def _find_model(self, mid):
@@ -1014,16 +1213,16 @@ class _Editor:
     def _on_model_save(self):
         data = self._collect_model_form()
         if not self._validate_model(data):
-            return
+            return False
         before = {m.get("id") for m in config.get_models()}
         try:
             ok, msg = config.save_model(data)
         except Exception as e:
             self._flash(f"保存失败：{e}", "err")
-            return
+            return False
         if not ok:
             self._flash(msg, "err")
-            return
+            return False
         # 新增（没有 id）时，把焦点落到刚创建的那条，方便继续配置
         keep = data["id"]
         if not keep:
@@ -1032,6 +1231,7 @@ class _Editor:
             keep = added[0].get("id") if added else None
         self._reload_models(keep_id=keep)
         self._flash(msg, "ok")
+        return True
 
     def _on_model_delete(self):
         if not self._model_id:
@@ -1050,8 +1250,7 @@ class _Editor:
         self._flash(msg, "ok")
 
     def _on_model_activate(self):
-        if not self._model_id:
-            self._flash("请先在左侧选中一条已保存的模型", "warn")
+        if not self._on_model_save():
             return
         ok, msg = config.set_active_model(self._model_id)
         self._reload_models(keep_id=self._model_id)
@@ -1092,10 +1291,153 @@ class _Editor:
         self._sync_model_buttons()                  # 复原可用态与配色
         self._flash(("连接成功：" if ok else "") + msg, "ok" if ok else "err")
 
+    # ================= 使用方法页 =================
+
+    def _build_usage_tab(self):
+        wrap = tk.Frame(self.tab_usage, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=24, pady=20)
+        wrap.columnconfigure(0, weight=1)
+        wrap.rowconfigure(1, weight=1)
+
+        tk.Label(wrap, text="使用方法", bg=BG, fg=TEXT, font=TITLE_FONT,
+                 anchor="w").grid(row=0, column=0, sticky="ew", pady=(0, 12))
+
+        scroll = tk.Frame(wrap, bg=BG)
+        scroll.grid(row=1, column=0, sticky="nsew")
+        scroll.columnconfigure(0, weight=1)
+        scroll.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(scroll, bg=BG, highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(scroll, orient="vertical", command=canvas.yview,
+                                 bg=BG, troughcolor=BG, relief="flat")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        content = tk.Frame(canvas, bg=BG)
+        window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _fit_content(event):
+            canvas.itemconfigure(window, width=event.width)
+
+        def _update_scroll(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _wheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+            return "break"
+
+        canvas.bind("<Configure>", _fit_content)
+        content.bind("<Configure>", _update_scroll)
+
+        def _bind_wheel(widget):
+            widget.bind("<MouseWheel>", _wheel, add="+")
+            for child in widget.winfo_children():
+                _bind_wheel(child)
+
+        def section(title, entries):
+            card = tk.Frame(content, bg=PANEL, padx=18, pady=15,
+                            highlightthickness=1, highlightbackground=BORDER)
+            card.pack(fill="x", padx=2, pady=(0, 10))
+            title_label = tk.Label(card, text=title, bg=PANEL, fg=ACCENT,
+                                   font=NAME_FONT, anchor="w")
+            title_label.pack(fill="x", pady=(0, 7))
+            _bind_wraplength(title_label, card, pad=36, min_w=120)
+            for item in entries:
+                kind = item[0]
+                if kind == "step":
+                    _, number, value = item
+                    row = tk.Frame(card, bg=PANEL)
+                    row.pack(fill="x", pady=2)
+                    num_label = tk.Label(row, text=number, bg=PANEL, fg=ACCENT,
+                                         font=LABEL_FONT, anchor="nw", width=3)
+                    num_label.pack(side="left", anchor="n")
+                    body = tk.Label(row, text=value, bg=PANEL, fg=TEXT,
+                                    font=self.editor_font, anchor="w",
+                                    justify="left")
+                    body.pack(side="left", fill="x", expand=True)
+                    _bind_wraplength(body, row, pad=44, min_w=120)
+                elif kind == "subhead":
+                    label = tk.Label(card, text=item[1], bg=PANEL, fg=TEXT,
+                                     font=(self.editor_font[0], self.editor_font[1], "bold"),
+                                     anchor="w")
+                    label.pack(fill="x", pady=(7, 2))
+                    _bind_wraplength(label, card, pad=36, min_w=120)
+                else:
+                    value = item[1]
+                    if kind == "note":
+                        label = tk.Label(card, text=value, bg="#f4f8f5", fg=MUTED,
+                                         font=self.editor_font, anchor="w",
+                                         justify="left", padx=11, pady=8)
+                        label.pack(fill="x", pady=(5, 2))
+                        _bind_wraplength(label, card, pad=58, min_w=120)
+                    elif kind == "link":
+                        label = tk.Label(card, text=value, bg=PANEL, fg=ACCENT,
+                                         font=(self.editor_font[0], self.editor_font[1], "underline"),
+                                         anchor="w", cursor="hand2")
+                        label.pack(fill="x", pady=(0, 4))
+                        label.bind("<Button-1>", lambda _e: __import__("webbrowser").open(value))
+                        _bind_wraplength(label, card, pad=36, min_w=120)
+                    else:
+                        label = tk.Label(card, text=value, bg=PANEL, fg=TEXT,
+                                         font=self.editor_font, anchor="w",
+                                         justify="left")
+                        label.pack(fill="x", pady=2)
+                        _bind_wraplength(label, card, pad=36, min_w=120)
+            _bind_wheel(card)
+
+        section("首次使用：填写 API Key（只需一次）", [
+            ("body", "首次启动时，如果还没有配置 API Key，程序会打开首次使用引导。"),
+            ("step", "1.", "打开 DeepSeek API Keys："),
+            ("link", "https://platform.deepseek.com/api_keys"),
+            ("step", "2.", "登录后创建 API Key，并复制以 sk- 开头的字符串。"),
+            ("step", "3.", "将 Key 粘贴到引导窗口。可以先点「测试连接」检查配置，再点「保存并启动」。"),
+            ("note", "Key 保存在本机的 %LOCALAPPDATA%\\ai-reply-helper\\config.json。文件中以明文保存，请勿将它发给他人或上传网盘。使用助手时，Key 会随请求发送到当前配置的模型服务，用于验证身份。"),
+        ])
+        section("日常使用", [
+            ("step", "1.", "在微信电脑版打开聊天窗口，并点一下消息输入框。"),
+            ("step", "2.", "输入要润色的草稿或关键词，然后按 Ctrl+Alt+P；也可以点击屏幕右下角的助手动图。"),
+            ("step", "3.", "在回复窗口选择一个版本：「回填微信」将内容填入输入框，不会自动发送；「复制」只复制内容，之后可自行粘贴。"),
+            ("note", "输入框为空时，助手会尝试根据当前可见的聊天消息起草回复。如果无法可靠判断哪些消息来自你、哪些来自对方，助手会忽略无法确认的上下文，避免把双方立场弄反。"),
+        ])
+        section("更换提示词或模型", [
+            ("subhead", "提示词"),
+            ("body", "在任意位置按下鼠标中键（滚轮按下），打开「设置」。在提示词列表卡片上点「设为当前」即可切换风格。点击卡片可编辑；「仅保存」只保存修改，「保存并设为当前」会保存并启用。内置提示词可以恢复默认。"),
+            ("subhead", "模型与 Key"),
+            ("body", "在模型列表卡片上点「设为当前」即可切换模型。点击卡片进入详情，可修改 API 地址、模型名和 Key；「测试连接」用于验证配置。没有 Key 的模型需要先填写并保存。"),
+        ])
+        section("聊天上下文与识别说明", [
+            ("body", "助手读取当前聊天窗口中可见的消息，不会自动读取整段历史记录。需要参考较早的内容时，请先在微信中滚动到对应位置。"),
+            ("body", "微信 3.x 通常通过界面控件读取文字。微信 4.x 使用窗口捕获和 OCR：RapidOCR 为主引擎，无结果时回退到 Windows 内置 WinRT OCR。"),
+            ("note", "OCR 属于图像识别，可能出现错字或漏消息。若说话人无法可靠分类，程序会忽略这部分上下文；输入框有草稿时仍可继续润色。"),
+        ])
+        section("常见问题", [
+            ("subhead", "按快捷键没有反应？"),
+            ("body", "确认助手正在运行、微信电脑版已登录并打开聊天窗口。程序会等待一段时间寻找微信窗口；仍失败时可查看 polish.log。"),
+            ("subhead", "提示 API Key 无效或 401？"),
+            ("body", "在设置中打开「模型与 Key」，进入对应模型详情，更新 Key 后保存；也可以先点「测试连接」。"),
+            ("subhead", "回复没有填回微信？"),
+            ("body", "触发助手前先点一下微信输入框。选择「回填微信」后，内容只会填入输入框，请检查后自行发送。"),
+            ("subhead", "微信 4.x 读不到上下文或错字较多？"),
+            ("body", "请确认消息在当前窗口可见。RapidOCR 不可用时才会使用 WinRT OCR；若日志显示正在使用 WinRT，系统需要有对应的中文 OCR 组件。也可以在 config.json 中将 ocr_context 设为 false，关闭微信 4.x 的上下文读取。"),
+            ("subhead", "安全软件提示或拦截？"),
+            ("body", "请先确认程序来自可信来源；未经核实不要将文件加入白名单。"),
+            ("subhead", "日志会记录聊天内容吗？"),
+            ("body", "默认 log_prompt=true，日志可能包含发送给模型的完整提示词，其中包括草稿和识别到的聊天上下文，以及模型回复。将 config.json 中的 log_prompt 设为 false 可以关闭完整内容记录；这不会改变发送给模型服务的内容。日志不会记录 API Key。"),
+            ("note", "日志通常在程序目录的 polish.log；如果该目录不可写，则位于：\n%LOCALAPPDATA%\\ai-reply-helper\\polish.log。"),
+        ])
+        section("网络与隐私", [
+            ("note", "使用润色或草拟功能需要联网访问当前配置的大模型服务。OCR 在本机完成；生成回复时，草稿和读取到的聊天上下文会发送给该模型服务。请勿输入不希望发送给该服务的信息。"),
+        ])
+        section("退出与卸载", [
+            ("body", "退出助手：鼠标悬停在右下角动图上，点击浮出的红色「×」。"),
+            ("body", "卸载安装版：从开始菜单或 Windows「已安装的应用」中卸载。便携版可删除 exe；配置和日志保存在 %LOCALAPPDATA%\\ai-reply-helper，如不再需要，可自行删除该文件夹。"),
+        ])
+
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
     # ================= 软件作者页签 =================
 
     def _build_author_tab(self):
-        """「软件作者」页：作者信息 + 使用交流群 / 作者公众号两张二维码卡片。
+        """「软件作者」页：作者信息与公众号二维码。
 
         布局沿用「提示词 / 模型与 Key」两页的两栏 grid 权重（左说明 / 右内容），
         右栏再对半分成两张等宽卡片：每张各自持有白底二维码、独立按容器尺寸
@@ -1103,19 +1445,19 @@ class _Editor:
         """
         wrap = tk.Frame(self.tab_author, bg=BG)
         wrap.pack(fill="both", expand=True)
-        wrap.columnconfigure(0, weight=1, minsize=244)
-        wrap.columnconfigure(1, weight=2, minsize=372)
+        wrap.columnconfigure(0, weight=1, minsize=240)
+        wrap.columnconfigure(1, weight=2, minsize=360)
         wrap.rowconfigure(1, weight=1)
 
         # 状态条（与其它页签同一位置语义）
         self.author_status = tk.Label(
-            wrap, text="扫码加入使用交流群、关注作者公众号，获取更新与帮助",
+            wrap, text="关注作者公众号，获取版本更新与使用帮助",
             bg=BG, fg=OK, font=LABEL_FONT, anchor="w", justify="left",
             wraplength=560)
         self.author_status.grid(row=0, column=0, columnspan=2, sticky="ew",
                                 padx=14, pady=(10, 6))
 
-        # ---- 左栏：作者信息 + 引导文案 + 两个入口按钮 ----
+        # ---- 左栏：作者信息与引导文案 ----
         left = tk.Frame(wrap, bg=PANEL, padx=16, pady=14)
         left.grid(row=1, column=0, sticky="nsew", padx=(14, 7), pady=(0, 12))
         left.columnconfigure(0, weight=1)
@@ -1132,11 +1474,8 @@ class _Editor:
             left,
             text=(
                 "这个助手会持续更新与完善，作者会在这里发布新版本与说明。\n\n"
-                "想交流用法、反馈问题，欢迎扫码加入使用交流群：\n"
-                "· 与其它使用者交流使用技巧与经验\n"
-                "· 反馈问题、提出功能建议\n"
-                "· 第一时间获取新版本与更新说明\n\n"
-                "如果它帮到了你，也欢迎关注作者的公众号。"
+                "如果这个助手帮到了你，欢迎关注作者的公众号。\n\n"
+                "公众号会发布软件更新、使用说明与实用工具。"
             ),
             bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="nw", justify="left",
             wraplength=220,
@@ -1144,31 +1483,21 @@ class _Editor:
         intro.grid(row=2, column=0, sticky="new")
         _bind_wraplength(intro, left, pad=34)
 
-        # 两个入口按钮等宽一行；资源缺失的那个不进按钮行，
-        # 避免留一个「点了没反应」的按钮。
+        # 资源缺失时不显示无效入口。
         specs = []
-        if qr_available(GROUP_QR_ASSET):
-            specs.append(("加入交流群",
-                          lambda: self._open_qr(GROUP_QR_ASSET), "primary"))
         if qr_available(AUTHOR_QR_ASSET):
             specs.append(("作者公众号",
-                          lambda: self._open_qr(AUTHOR_QR_ASSET), "secondary"))
+                          lambda: self._open_qr(AUTHOR_QR_ASSET), "primary"))
         if specs:
             _mk_btn_row(left, specs, row=3, pady=(14, 0))
 
-        # ---- 右栏：两张二维码卡片（等宽并排）----
+        # ---- 右栏：公众号二维码卡片 ----
         right = tk.Frame(wrap, bg=BG)
         right.grid(row=1, column=1, sticky="nsew", padx=(7, 14), pady=(0, 12))
-        right.columnconfigure(0, weight=1, uniform="qrcard")
-        right.columnconfigure(1, weight=1, uniform="qrcard")
+        right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
-
         self._make_qr_card(
-            right, 0, GROUP_QR_ASSET, "使用交流群",
-            "微信扫码加入，交流用法、反馈问题。群二维码有时效（约 7 天），"
-            "过期请找作者重新获取。")
-        self._make_qr_card(
-            right, 1, AUTHOR_QR_ASSET, "作者微信公众号",
+            right, 0, AUTHOR_QR_ASSET, "作者微信公众号",
             "微信扫码关注，获取版本更新、使用帮助与更多实用小工具。")
 
     def _make_qr_card(self, parent, column, asset, title, desc):
@@ -1289,7 +1618,7 @@ class _Editor:
         for w in (self.p_name, self.p_content, self.m_name, self.m_base,
                   self.m_model, self.m_key):
             try:
-                w.configure(highlightbackground=BORDER)
+                w.configure(highlightbackground=FIELD_BORDER)
             except Exception:
                 pass
 
@@ -1311,6 +1640,50 @@ class _Editor:
                 except Exception:
                     pass
                 return False
+        return True
+
+    def _prompt_is_dirty(self):
+        current = (self.p_name.get().strip(), self.p_desc.get().strip(),
+                   self.p_content.get("1.0", "end").strip())
+        return current != getattr(self, "_prompt_snapshot", current)
+
+    def _model_is_dirty(self):
+        current = (self.m_name.get().strip(), self.m_base.get().strip(),
+                   self.m_model.get().strip(), self.m_key.get().strip())
+        return current != getattr(self, "_model_snapshot", current)
+
+    def _confirm_leave_current(self):
+        """离开正在编辑的详情页时，明确处理未保存内容。"""
+        tab = getattr(self, "current_tab", None)
+        if tab == "prompts" and getattr(self, "prompt_view", "list") == "detail":
+            dirty = self._prompt_is_dirty()
+            save = self._on_prompt_save
+        elif tab == "models" and getattr(self, "model_view", "list") == "detail":
+            dirty = self._model_is_dirty()
+            save = self._on_model_save
+        else:
+            return True
+        if not dirty:
+            return True
+        try:
+            from tkinter import messagebox
+            choice = messagebox.askyesnocancel(
+                "未保存的更改",
+                "是否先保存当前修改？\n\n是：保存后继续\n否：放弃修改\n取消：留在当前页面",
+                parent=self.root,
+            )
+        except Exception:
+            return False
+        if choice is None:
+            return False
+        if choice:
+            return bool(save())
+        if tab == "prompts":
+            self._select_prompt(self._prompt_id, show_detail=False,
+                                skip_guard=True)
+        else:
+            self._select_model(self._model_id, show_detail=False,
+                               skip_guard=True)
         return True
 
     def _confirm(self, title, message):
@@ -1349,15 +1722,11 @@ class _Editor:
             pass
 
 
-# ================= 二维码资源（使用交流群 / 作者公众号）=================
+# ================= 二维码资源（作者公众号）=================
 
 AUTHOR_QR_ASSET = "author_qrcode.png"    # 作者微信公众号
-# 使用交流群：微信生成的群二维码自带有效期（约 7 天）。过期后只需用同名图片
-# 替换 group_qrcode.png（放程序目录的会优先于打包内置的那张），界面无需改动 ——
-# 文案里已提示用户「过期请找作者重新获取」。
-GROUP_QR_ASSET = "group_qrcode.png"
 AUTHOR_NAME = "地铁里的 AI 探员"          # 作者微信公众号名称（展示用）
-MAX_QR_SIDE = 300                        # 页内二维码最大边长（两张并排，比单张时略小）
+MAX_QR_SIDE = 300                        # 页内二维码最大边长
 _QR_CACHE = {}                           # asset -> PIL.Image（只缓存加载成功的）
 
 
@@ -1411,7 +1780,6 @@ def _fit_photo(pil, box_w, box_h, master=None):
 
 # 弹窗标题 / 副标题（按资源名区分；未登记的资源走默认文案）
 QR_DIALOG_META = {
-    GROUP_QR_ASSET: ("使用交流群", "微信扫码加入交流群"),
     AUTHOR_QR_ASSET: ("作者微信公众号", "微信扫一扫关注"),
 }
 
