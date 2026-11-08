@@ -219,6 +219,21 @@ def _mk_btn_row(parent, specs, row, bg=None, pady=(0, 0)):
     return btns
 
 
+def _mk_link(parent, text, cmd, bg=PANEL, fg=TEXT, hover_fg=ACCENT,
+            font=SMALL_FONT, pady=2):
+    """卡片里的纯文字操作（「设为当前」「编辑」「删除」）。
+
+    与 _mk_btn 的实心按钮块区分：列表卡片统一用文字链接，视觉更轻。
+    hover 只改前景色；底色交给卡片级 hover 统一刷新，避免两套逻辑打架。
+    """
+    link = tk.Label(parent, text=text, bg=bg, fg=fg, font=font,
+                    cursor="hand2", pady=pady)
+    link.bind("<Button-1>", lambda _e: cmd())
+    link.bind("<Enter>", lambda _e: link.configure(fg=hover_fg))
+    link.bind("<Leave>", lambda _e: link.configure(fg=fg))
+    return link
+
+
 class _ScrollList:
     """可滚动列表容器（Canvas + 内嵌 Frame），宽度自动跟随外层。"""
 
@@ -298,22 +313,49 @@ class _Editor:
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(0, weight=1)
-        nav = tk.Frame(shell, bg="#f0f1f2", width=190)
+        nav = tk.Frame(shell, bg=PANEL, width=190)
         nav.grid(row=0, column=0, sticky="ns")
         nav.grid_propagate(False)
-        tk.Label(nav, text="设置", bg="#f0f1f2", fg=TEXT,
-                 font=TITLE_FONT, anchor="w", padx=20, pady=24).pack(fill="x")
+        # 窗口标题已是「会聊 - 设置」，页内不再重复放大标题，直接给分组菜单
         self.nav_btns = {}
-        for key, label in (("prompts", "提示词"), ("contacts", "联系人规则"),
-                           ("companion", "智能伙伴"), ("models", "模型与 Key"),
-                           ("usage", "使用方法"),
+
+        def _group(title, top=10):
+            tk.Label(nav, text=title, bg=PANEL, fg=MUTED,
+                     font=SMALL_FONT, anchor="w", padx=20).pack(
+                         fill="x", pady=(top, 4))
+
+        def _nav_item(key, label):
+            # 每行 = 左侧 3px 竖条 + 文字。选中态：浅绿底 + 绿竖条 + 绿字；
+            # 未选中时竖条与底色一致（视觉上隐藏），文字左缩进保持 20px 不变。
+            row = tk.Frame(nav, bg=PANEL)
+            row.pack(fill="x", padx=(6, 8), pady=1)
+            bar = tk.Frame(row, bg=PANEL, width=3)
+            bar.pack_propagate(False)
+            bar.pack(side="left", fill="y")
+            text = tk.Label(row, text=label, bg=PANEL, fg=TEXT,
+                            font=LABEL_FONT, anchor="w", padx=17, pady=9,
+                            cursor="hand2")
+            text.pack(side="left", fill="x", expand=True)
+            # bar 与 text 是兄弟控件，各自绑定不会因 bindtag 冒泡重复触发
+            for w in (bar, text):
+                w.bind("<Button-1>", lambda _e, k=key: self._switch_tab(k))
+            self.nav_btns[key] = {"row": row, "bar": bar, "text": text}
+
+        _group("配置", top=20)
+        for key, label in (("prompts", "提示词"),
+                           ("contacts", "联系人规则"),
+                           ("companion", "智能伙伴"),
+                           ("models", "模型与 Key")):
+            _nav_item(key, label)
+
+        sep = tk.Frame(nav, bg=BORDER, height=1)
+        sep.pack_propagate(False)
+        sep.pack(fill="x", padx=20, pady=14)
+
+        _group("帮助", top=0)
+        for key, label in (("usage", "使用方法"),
                            ("author", "软件作者")):
-            btn = tk.Label(nav, text=label, bg="#f0f1f2", fg=TEXT,
-                           font=LABEL_FONT, anchor="w", padx=20, pady=13,
-                           cursor="hand2")
-            btn.pack(fill="x", padx=(6, 0), pady=2)
-            btn.bind("<Button-1>", lambda _e, k=key: self._switch_tab(k))
-            self.nav_btns[key] = btn
+            _nav_item(key, label)
 
         self.body = tk.Frame(shell, bg=BG)
         self.body.grid(row=0, column=1, sticky="nsew")
@@ -351,10 +393,12 @@ class _Editor:
             return
         if getattr(self, "current_tab", None) == "companion" and key != "companion":
             self._preview_stop()            # 离开智能伙伴页即停掉预览动画
-        for k, btn in self.nav_btns.items():
+        for k, entry in self.nav_btns.items():
             active = (k == key)
-            btn.configure(bg=ACCENT if active else "#f0f1f2",
-                          fg="#ffffff" if active else TEXT)
+            bg = ACTIVE_BG if active else PANEL
+            entry["row"].configure(bg=bg)
+            entry["bar"].configure(bg=ACCENT if active else bg)
+            entry["text"].configure(bg=bg, fg=ACCENT if active else TEXT)
         for frame in self.tabs.values():
             frame.pack_forget()
         self.tabs[key].pack(fill="both", expand=True)
@@ -469,34 +513,56 @@ class _Editor:
         self.prompt_wrap = wrap
         self.prompt_view = "list"
 
-        # 状态条
-        self.prompt_status = tk.Label(
-            wrap, text="", bg=BG, fg=OK, font=LABEL_FONT, anchor="w",
-            justify="left", wraplength=560)
-        self.prompt_status.grid(row=0, column=0, columnspan=2, sticky="ew",
-                                padx=24, pady=(20, 10))
+        # 头部：标题 + 状态副标题 + 右侧主按钮（与联系人规则页保持一致）
+        header = tk.Frame(wrap, bg=BG)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew",
+                    padx=24, pady=(20, 12))
+        header.columnconfigure(1, weight=1)
+        tk.Label(header, text="提示词", bg=BG, fg=TEXT,
+                 font=TITLE_FONT, anchor="w").grid(row=0, column=0, sticky="w")
+        self.prompt_status = tk.Label(header, text="", bg=BG, fg=MUTED,
+                                      font=SMALL_FONT, anchor="w")
+        self.prompt_status.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        _mk_btn(header, "+ 新增提示词", self._on_prompt_new,
+                "primary").grid(row=0, column=2, sticky="e")
+        self.prompt_header = header
 
-        # 左栏：列表
+        # 列表区：独立满宽搜索框 + 滚动列表
         left = tk.Frame(wrap, bg=BG)
         left.grid(row=1, column=0, columnspan=2, sticky="nsew",
-                  padx=24, pady=(58, 20))
+                  padx=24, pady=(0, 20))
         self.prompt_list_panel = left
-        bar = tk.Frame(left, bg=BG)
-        bar.pack(fill="x", pady=(0, 6))
-        _mk_btn(bar, "+ 新增提示词", self._on_prompt_new, "primary").pack(side="left")
-        tk.Label(bar, text="搜索", bg=BG, fg=MUTED,
-                 font=SMALL_FONT).pack(side="left", padx=(10, 4))
+        search_box = tk.Frame(left, bg=FIELD_BG, highlightthickness=1,
+                              highlightbackground=FIELD_BORDER,
+                              highlightcolor=ACCENT)
+        search_box.pack(fill="x", pady=(0, 12))
         self.prompt_search_entry = tk.Entry(
-            bar, textvariable=self.prompt_search_var, width=1,
+            search_box, textvariable=self.prompt_search_var, width=1,
             bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, relief="flat",
-            borderwidth=0, highlightthickness=1,
-            highlightbackground=FIELD_BORDER, highlightcolor=ACCENT,
-            font=LABEL_FONT,
+            borderwidth=0, highlightthickness=0, font=LABEL_FONT,
         )
-        self.prompt_search_entry.pack(side="left", fill="x", expand=True)
+        self.prompt_search_entry.pack(fill="x", ipady=7, padx=12)
         self.prompt_search_entry.bind(
             "<Escape>", lambda _e: self.prompt_search_var.set(""),
         )
+        # placeholder 用独立 Label 覆盖，不写进 StringVar，
+        # 因此筛选逻辑（_apply_prompt_search）完全无需改动。
+        self.prompt_search_hint = tk.Label(
+            search_box, text="搜索名称或一句话说明...", bg=FIELD_BG,
+            fg=MUTED, font=LABEL_FONT, anchor="w")
+        self.prompt_search_hint.bind(
+            "<Button-1>", lambda _e: self.prompt_search_entry.focus_set())
+
+        def _sync_search_hint(*_args):
+            if self.prompt_search_var.get().strip():
+                self.prompt_search_hint.place_forget()
+            else:
+                self.prompt_search_hint.place(
+                    in_=self.prompt_search_entry, x=2, y=0,
+                    relwidth=1, relheight=1)
+        self.prompt_search_var.trace_add("write", _sync_search_hint)
+        _sync_search_hint()
+
         self.plist = _ScrollList(left)
         self.plist.outer.pack(fill="both", expand=True)
 
@@ -561,14 +627,14 @@ class _Editor:
             return
         self.prompt_view = "list"
         self.prompt_detail_panel.grid_remove()
-        self.prompt_status.grid(row=0, column=0, columnspan=2, sticky="ew",
-                                padx=24, pady=(20, 10))
+        self.prompt_header.grid(row=0, column=0, columnspan=2, sticky="ew",
+                                padx=24, pady=(20, 12))
         self.prompt_list_panel.grid(row=1, column=0, columnspan=2, sticky="nsew",
-                                   padx=24, pady=(58, 20))
+                                    padx=24, pady=(0, 20))
 
     def _show_prompt_detail(self):
         self.prompt_view = "detail"
-        self.prompt_status.grid_remove()
+        self.prompt_header.grid_remove()
         self.prompt_list_panel.grid_remove()
         self.prompt_detail_panel.grid(row=0, column=0, columnspan=2, rowspan=2, sticky="nsew",
                                       padx=24, pady=20)
@@ -597,16 +663,13 @@ class _Editor:
             )).casefold()
         ]
         active_id = config.get_active_prompt_id()
-        builtin_count = sum(1 for p in prompts if p.get("builtin"))
-        custom_count = len(prompts) - builtin_count
         status = (
-            f"当前生效：{self._name_of_prompt(active_id)}"
-            f"　｜　共 {len(prompts)} 条"
-            f"（内置 {builtin_count} / 自定义 {custom_count}）"
+            f"当前生效 {self._name_of_prompt(active_id)}"
+            f" · 共 {len(prompts)} 条"
         )
         if query:
-            status += f"　｜　匹配 {len(filtered)} 条"
-        self.prompt_status.configure(text=status, fg=OK)
+            status += f" · 匹配 {len(filtered)} 条"
+        self.prompt_status.configure(text=status, fg=MUTED)
         self._render_prompt_list(filtered, active_id)
 
     def _name_of_prompt(self, pid):
@@ -635,26 +698,19 @@ class _Editor:
         row_bg = ACTIVE_BG if is_active else CARD_BG
         frame = tk.Frame(self.plist.inner,
                          bg=ACTIVE_BORDER if is_active else BORDER, padx=1)
-        frame.pack(fill="x", pady=3, padx=2)
+        frame.pack(fill="x", pady=4, padx=3)
         body = tk.Frame(frame, bg=row_bg)
-        body.pack(fill="x")
-        bar = tk.Frame(body, bg=ACTIVE_BORDER if is_active else BORDER, width=5)
+        body.pack(fill="x", expand=True)
+        bar = tk.Frame(body, bg=ACTIVE_BORDER if is_active else BORDER, width=4)
+        bar.pack_propagate(False)
         bar.pack(side="left", fill="y")
-        action_button = None
-        if not is_active:
-            action_button = _mk_btn(
-                body, "设为当前",
-                lambda prompt_id=pid: self._activate_prompt_from_list(prompt_id),
-                "primary", pad=9)
-            action_button.configure(font=SMALL_FONT, pady=4)
-            action_button.pack(side="right", padx=14, pady=8)
         mid = tk.Frame(body, bg=row_bg)
-        mid.pack(side="left", fill="x", expand=True, padx=(14, 12), pady=10)
+        mid.pack(side="left", fill="x", expand=True, padx=(16, 16), pady=(12, 10))
 
         top = tk.Frame(mid, bg=row_bg)
         top.pack(fill="x")
         name_lbl = tk.Label(top, text=p.get("name", "未命名"), bg=row_bg,
-                            fg=TEXT, font=LABEL_FONT, anchor="w")
+                            fg=TEXT, font=NAME_FONT, anchor="w")
         name_lbl.pack(side="left")
         tk.Label(top, text="内置" if is_builtin else "自定义",
                  bg=BADGE_BUILTIN_BG if is_builtin else BADGE_CUSTOM_BG,
@@ -670,15 +726,26 @@ class _Editor:
             desc_lbl = tk.Label(mid, text=_preview(desc, 40), bg=row_bg,
                                 fg=MUTED, font=SMALL_FONT, anchor="w",
                                 justify="left", wraplength=160)
-            desc_lbl.pack(fill="x")
+            desc_lbl.pack(fill="x", pady=(4, 0))
             _bind_wraplength(desc_lbl, mid, pad=2)
         content_lbl = tk.Label(
             mid, text=_preview(p.get("content", ""), 40), bg=row_bg,
             fg=MUTED, font=SMALL_FONT, anchor="w", justify="left",
             wraplength=160,
         )
-        content_lbl.pack(fill="x")
+        content_lbl.pack(fill="x", pady=(2, 0))
         _bind_wraplength(content_lbl, mid, pad=2)
+
+        # 底部操作行：与联系人规则页一致，用纯文字链接而非实心按钮块
+        actions = tk.Frame(mid, bg=row_bg)
+        actions.pack(fill="x", pady=(6, 0))
+        action_button = None
+        if not is_active:
+            action_button = _mk_link(
+                actions, "设为当前",
+                lambda prompt_id=pid: self._activate_prompt_from_list(prompt_id),
+                bg=row_bg, fg=TEXT)
+            action_button.pack(side="right")
 
         def _pick(_e, pid=pid):
             self._select_prompt(pid)
@@ -691,9 +758,11 @@ class _Editor:
         _bind_pick(frame)
 
         if not is_active:
-            card_widgets = [frame, body, mid, top, name_lbl, content_lbl]
+            card_widgets = [frame, body, mid, top, name_lbl, content_lbl, actions]
             if desc:
                 card_widgets.append(desc_lbl)
+            if action_button is not None:
+                card_widgets.append(action_button)
 
             def _hover(_event=None, hovering=True):
                 color = "#f7faf8" if hovering else CARD_BG
@@ -880,36 +949,43 @@ class _Editor:
     def _build_contact_rules_tab(self):
         wrap = tk.Frame(self.tab_contacts, bg=BG)
         wrap.pack(fill="both", expand=True, padx=24, pady=20)
-        wrap.rowconfigure(2, weight=1)
+        wrap.rowconfigure(1, weight=1)
         wrap.columnconfigure(0, weight=1)
 
+        # 头部：标题 + 状态副标题 + 右侧主按钮（与提示词页保持同一套版式）
         heading = tk.Frame(wrap, bg=BG)
-        heading.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        heading.columnconfigure(0, weight=1)
+        heading.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        heading.columnconfigure(1, weight=1)
         tk.Label(heading, text="联系人规则", bg=BG, fg=TEXT,
                  font=TITLE_FONT, anchor="w").grid(row=0, column=0, sticky="w")
+        self.contact_status = tk.Label(heading, text="", bg=BG, fg=MUTED,
+                                       font=SMALL_FONT, anchor="w")
+        self.contact_status.grid(row=0, column=1, sticky="w", padx=(10, 0))
         _mk_btn(heading, "+ 添加规则", self._add_contact_rule,
-                "primary").grid(row=0, column=1, sticky="e")
+                "primary").grid(row=0, column=2, sticky="e")
 
+        self.contact_list = _ScrollList(wrap)
+        self.contact_list.outer.grid(row=1, column=0, sticky="nsew")
+
+        # 说明文案原样保留，只是从大块绿色提示改成列表下方的灰色小字脚注
         note = tk.Label(
             wrap,
             text="按微信顶部名称完整匹配；识别失败、重名或不确定时使用全局默认提示词。"
                  "规则仅保存在本机，联系人名称不会单独发送给模型或写入详细日志。\n"
                  "如果微信中有多个联系人使用相同显示名称，仅凭名称无法区分，请勿为该名称设置规则。",
-            bg="#f0f8f3", fg=MUTED, font=SMALL_FONT, anchor="w",
-            justify="left", padx=12, pady=9, wraplength=600,
+            bg=BG, fg=MUTED, font=SMALL_FONT, anchor="w",
+            justify="left", wraplength=600,
         )
-        note.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        note.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         _bind_wraplength(note, wrap, pad=48, min_w=200)
-
-        self.contact_list = _ScrollList(wrap)
-        self.contact_list.outer.grid(row=2, column=0, sticky="nsew")
         self._render_contact_rules()
 
     def _render_contact_rules(self):
         self.contact_list.clear()
         rules = config.get_contact_rules()
         prompts = config.get_prompts()
+        self.contact_status.configure(
+            text=f"按微信顶部名称完整匹配 · 共 {len(rules)} 条")
         prompt_names = {p.get("id"): p.get("name", "（未命名提示词）")
                         for p in prompts}
         if not rules:
@@ -927,27 +1003,35 @@ class _Editor:
             prompt_id = rule.get("prompt_id")
             prompt_name = prompt_names.get(prompt_id, "提示词不存在（将使用默认）")
             invalid = name in duplicate_names or prompt_id not in prompt_names
-            card = tk.Frame(self.contact_list.inner,
-                            bg="#fff8e8" if invalid else CARD_BG,
-                            highlightthickness=1, highlightbackground=BORDER,
-                            padx=12, pady=9)
-            card.pack(fill="x", padx=6, pady=(6, 0))
-            info = tk.Frame(card, bg=card["bg"])
-            info.pack(side="left", fill="x", expand=True)
-            tk.Label(info, text=name or "（名称为空）", bg=card["bg"], fg=TEXT,
+            card_bg = "#fff8e8" if invalid else CARD_BG
+            card = tk.Frame(self.contact_list.inner, bg=BORDER, padx=1)
+            card.pack(fill="x", padx=4, pady=4)
+            body = tk.Frame(card, bg=card_bg)
+            body.pack(fill="x", expand=True)
+            bar = tk.Frame(body, bg=WARN if invalid else BORDER, width=4)
+            bar.pack_propagate(False)
+            bar.pack(side="left", fill="y")
+            info = tk.Frame(body, bg=card_bg)
+            info.pack(side="left", fill="x", expand=True,
+                      padx=(16, 16), pady=(12, 10))
+            tk.Label(info, text=name or "（名称为空）", bg=card_bg, fg=TEXT,
                      font=NAME_FONT, anchor="w").pack(anchor="w")
             detail = f"使用提示词：{prompt_name}"
             if name in duplicate_names:
                 detail += "　· 名称重复，当前不会应用"
-            tk.Label(info, text=detail, bg=card["bg"],
+            tk.Label(info, text=detail, bg=card_bg,
                      fg=WARN if invalid else MUTED,
-                     font=SMALL_FONT, anchor="w").pack(anchor="w", pady=(3, 0))
-            actions = tk.Frame(card, bg=card["bg"])
-            actions.pack(side="right", padx=(8, 0))
-            _mk_btn(actions, "编辑", lambda i=index: self._edit_contact_rule(i),
-                    "secondary", pad=8).pack(side="left", padx=(0, 6))
-            _mk_btn(actions, "删除", lambda i=index: self._delete_contact_rule(i),
-                    "danger", pad=8).pack(side="left")
+                     font=SMALL_FONT, anchor="w").pack(anchor="w", pady=(4, 0))
+            # 底部操作行：左右分布的纯文字链接，与提示词卡片一致
+            actions = tk.Frame(info, bg=card_bg)
+            actions.pack(fill="x", pady=(8, 0))
+            _mk_link(actions, "编辑",
+                     lambda i=index: self._edit_contact_rule(i),
+                     bg=card_bg, fg=TEXT).pack(side="left")
+            _mk_link(actions, "删除",
+                     lambda i=index: self._delete_contact_rule(i),
+                     bg=card_bg, fg=DANGER,
+                     hover_fg=DANGER_HOVER).pack(side="right")
 
     def _add_contact_rule(self):
         self._open_contact_rule_dialog()
