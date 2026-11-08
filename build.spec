@@ -4,7 +4,7 @@
 用法：
     pyinstaller build.spec --noconfirm --clean
 产出：
-    dist/微信AI润色助手.exe
+    dist/会聊.exe
 
 要点：
   - console=False：无控制台黑框。注意 main.py 已对 sys.stdout is None 做判空。
@@ -98,7 +98,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="微信AI润色助手",
+    name="会聊",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

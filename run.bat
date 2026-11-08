@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title WeChat AI Polish Assistant
+title HuiLiao - AI Reply Assistant
 cd /d %~dp0
 echo ===================================================
-echo   WeChat AI Polish Assistant
+echo   HuiLiao - AI Reply Assistant
 echo   Directory: %CD%
 echo   Starting...
 echo ===================================================

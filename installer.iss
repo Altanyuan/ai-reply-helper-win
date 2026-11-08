@@ -1,11 +1,11 @@
-﻿; Inno Setup 6 脚本：生成「微信AI润色助手」安装程序
+﻿; Inno Setup 6 脚本：生成「会聊」安装程序
 ; 重要：本文件必须保存为 UTF-8 **带 BOM**，否则 Inno Setup 会按 ANSI 读取导致中文乱码。
-; 用法：ISCC installer.iss   （产出 dist\Setup_微信AI润色助手.exe）
+; 用法：ISCC installer.iss   （产出 dist\Setup_会聊.exe）
 
-#define MyAppName "ai-reply-helper"
+#define MyAppName "会聊"
 #define MyAppVersion "1.0"
-#define MyAppPublisher "WeChat AI Polish"
-#define MyAppExeName "ai-reply-helper.exe"
+#define MyAppPublisher "AI探员"
+#define MyAppExeName "会聊.exe"
 #define MyAppDirName "ai-reply-helper"
 
 [Setup]
@@ -33,7 +33,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-; 安装向导与生成的 Setup.exe 使用微信风格图标（快捷方式图标跟随 exe 自身图标）
+; 安装向导与生成的 Setup.exe 使用应用图标（快捷方式图标跟随 exe 自身图标）
 SetupIconFile=icon.ico
 
 [Languages]
@@ -43,7 +43,7 @@ Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.i
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked
 
 [Files]
-; 动图资源(1.webp/2.webp)已打包进 exe，无需单独安装
+; 动图资源与智能伙伴皮肤已打包进 exe，无需单独安装
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

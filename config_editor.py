@@ -2550,7 +2550,7 @@ def open_editor(tab="author", on_saved=None):
     config.ensure_models_seeded()
 
     root = tk.Tk()
-    root.title("ai-reply-helper - 设置")
+    root.title("会聊 - 设置")
     root.configure(bg=BG)
 
     # 自适应：按屏幕尺寸给一个合适的初始大小，小屏也不会超出边界

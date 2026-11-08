@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Build WeChat AI Polish Assistant
+title Build HuiLiao
 cd /d %~dp0
 echo ===================================================
 echo   Build: PyInstaller (exe) + Inno Setup (installer)
@@ -43,7 +43,7 @@ if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
     goto :fail
 )
-echo       OK: dist\WeChat AI Polish.exe (filename may contain Chinese chars)
+echo       OK: dist\*.exe (Chinese filename is set by name in build.spec)
 
 echo [3/3] Building installer with Inno Setup...
 rem ISCC is often missing from PATH (especially for per-user installs),

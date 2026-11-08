@@ -216,7 +216,7 @@ def run_setup_wizard(cfg):
     返回 True 表示已保存 Key（可以启动主程序）；False 表示用户放弃（应退出）。
     """
     root = tk.Tk()
-    root.title("ai-reply-helper - 首次配置")
+    root.title("会聊 - 首次配置")
     root.configure(bg=BG)
     root.geometry("660x560")
     root.minsize(600, 500)

@@ -197,7 +197,7 @@ def _add_message(parent, text, side="right", avatar_text=None, bubble_fill=None)
     return bf
 
 
-def _header(root, title="ai-reply-helper"):
+def _header(root, title="会聊"):
     """微信聊天顶栏：左返回、中标题、右关闭。"""
     bar = tk.Frame(root, bg=HEADER_BG, height=46)
     bar.pack(fill="x")
@@ -566,7 +566,7 @@ def _build_choices(root, versions, on_choose, chat_name=None,
 
 def _build_error(root, msg):
     """构建微信风格错误提示卡。"""
-    _header(root, title="ai-reply-helper")
+    _header(root, title="会聊")
     inner, _canvas = _scroll_area(root)
 
     sys_tip = tk.Label(
@@ -676,7 +676,7 @@ def show_error(msg, master=None, on_close=None):
     关闭时触发 on_close（如 tray.show_idle()）。
     """
     root = tk.Toplevel(master) if master is not None else tk.Tk()
-    root.title("ai-reply-helper - 提示")
+    root.title("会聊 - 提示")
     root.attributes("-topmost", True)
     root.geometry("430x260")
     try:

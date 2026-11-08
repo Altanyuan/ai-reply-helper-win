@@ -71,7 +71,7 @@ def _ensure_single_instance():
             old_pid = None
         if old_pid and _pid_alive(old_pid):
             log.warning(f"检测到旧实例(PID={old_pid})，正在终止以启动新实例…")
-            print(f"[AI润色助手] 发现旧实例(PID={old_pid})，已自动终止，启动新实例。")
+            print(f"[会聊] 发现旧实例(PID={old_pid})，已自动终止，启动新实例。")
             try:
                 subprocess.run(
                     ["taskkill", "/PID", str(old_pid), "/F", "/T"],
@@ -541,8 +541,8 @@ def main():
         tray.set_command(trigger)
 
     log.info(f"=== 启动 build={APP_VERSION}（弹框修复 run_ui 已启用），热键={combo} ===")
-    print(f"[AI润色助手] 已启动 build={APP_VERSION}，热键 {combo}。在微信输入框打字后按热键即可润色。")
-    print(f"[AI润色助手] 点击「鼠标中键（滚轮按下）」任意位置即可打开设置页"
+    print(f"[会聊] 已启动 build={APP_VERSION}，热键 {combo}。在微信输入框打字后按热键即可润色。")
+    print(f"[会聊] 点击「鼠标中键（滚轮按下）」任意位置即可打开设置页"
           f"（默认「软件作者」页，含交流群 / 公众号二维码）；Ctrl+C 退出。")
 
     hotkeys = keyboard.GlobalHotKeys({combo: on_activate})
