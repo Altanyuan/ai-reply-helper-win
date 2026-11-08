@@ -11,6 +11,7 @@ import uiautomation as auto
 from pynput import keyboard, mouse as pynput_mouse
 
 import config
+import companions
 import first_run
 import paths
 import wechat_window
@@ -417,6 +418,26 @@ def trigger():
     t.start()
 
 
+def _reload_tray_companion():
+    """设置页保存「智能伙伴」后热切换托盘皮肤（仅入队，线程安全）。
+
+    由 config_editor 的 on_saved 回调触发（编辑器所在线程），
+    这里只重新解析配置并给托盘发 swap 指令，不直接触碰它的 Tk。
+    """
+    try:
+        spec = companions.resolve(config.load_config())
+        t = tray
+        if t is None:
+            return
+        t.swap_companion(spec.idle, spec.working, spec.dance,
+                         spec.dance_enabled)
+        log.info(f"托盘伙伴热切换：{spec.name}"
+                 f"（待命 {len(spec.idle)} 段"
+                 f"{'，含右键彩蛋' if spec.dance else ''}）")
+    except Exception as e:
+        log.warning(f"托盘伙伴热切换失败: {e}")
+
+
 def open_config_editor():
     """打开设置页（默认停在「软件作者」页，点击鼠标中键触发）。
     另起线程跑 tkinter，避免阻塞监听。
@@ -430,7 +451,7 @@ def open_config_editor():
     def _runner():
         try:
             import config_editor
-            config_editor.open_editor()
+            config_editor.open_editor(on_saved=_reload_tray_companion)
         finally:
             _config_lock.release()
 
@@ -494,7 +515,8 @@ def main():
         except Exception as e:
             log.warning(f"OCR 状态探测失败（不影响主流程）: {e}")
 
-    # 右下角浮动动图：启动即显示 1.webp，按热键切 2.webp，关弹窗切回 1.webp
+    # 右下角浮动动图（智能伙伴）：待命=皮肤 idle（企鹅为双段轮播），
+    # 工作=皮肤 working，企鹅另有右键舞蹈彩蛋。
     # 图标可用鼠标左键拖动；松手后位置写入 config.json 的 tray_pos，下次启动沿用。
     def _save_tray_pos(x, y):
         try:
@@ -502,9 +524,14 @@ def main():
         except Exception as e:
             log.warning(f"写入托盘动图位置失败（不影响本次使用）: {e}")
 
+    spec = companions.resolve(cfg)
+    log.info(f"智能伙伴：{spec.name}（待命 {len(spec.idle)} 段"
+             f"{'，含右键彩蛋' if spec.dance else ''}）")
     tray = make_tray(
-        str(paths.asset(cfg.get("idle_gif", "1.webp"))),
-        str(paths.asset(cfg.get("active_gif", "2.webp"))),
+        spec.idle,
+        spec.working,
+        dance_path=spec.dance,
+        dance_enabled=spec.dance_enabled,
         size=int(cfg.get("tray_size", 220)),
         pos=cfg.get("tray_pos"),
         on_move=_save_tray_pos,

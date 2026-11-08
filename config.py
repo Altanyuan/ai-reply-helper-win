@@ -87,6 +87,10 @@ DEFAULTS = {
     "console_log": True,         # 是否在控制台窗口实时输出日志（run.bat 窗口可见）
     "idle_gif": "1.webp",        # 右下角浮动动图：程序运行时显示
     "active_gif": "2.webp",      # 按热键后显示；关闭润色弹窗后切回 idle_gif
+    # 智能伙伴（皮肤系统）。companion.character: robot=机器人 / penguin=企鹅；
+    # dance_enabled: 右键点击播放舞蹈彩蛋（仅企鹅皮肤有资源）。
+    # 兼容：若用户改过 idle_gif/active_gif（非默认 1.webp/2.webp），优先按自定义皮肤处理。
+    "companion": {"character": "robot", "dance_enabled": True},
     "tray_size": 220,            # 动图窗口边长（像素）
     "tray_pos": None,            # 动图上次拖动后的位置 [x, y]；None=默认右下角（越界会自动复位）
     "system_prompt": BUILTIN_PROMPTS[0]["content"],   # 兼容旧逻辑/回落值
@@ -126,6 +130,8 @@ def load_config():
     # 避免共享 DEFAULTS 里的可变列表引用
     cfg["prompts"] = [dict(p) for p in BUILTIN_PROMPTS]
     cfg["active_prompt_id"] = BUILTIN_PROMPTS[0]["id"]
+    # companion 是嵌套 dict：深拷贝 + 按键合并，避免共享引用与整表覆盖
+    cfg["companion"] = dict(DEFAULTS["companion"])
 
     data = _read_json()
     if data:
@@ -134,6 +140,10 @@ def load_config():
             cfg["prompts"] = data["prompts"]
         if "active_prompt_id" in data:
             cfg["active_prompt_id"] = data["active_prompt_id"]
+        if isinstance(data.get("companion"), dict):
+            merged = dict(DEFAULTS["companion"])
+            merged.update(data["companion"])
+            cfg["companion"] = merged
 
     # 多模型配置：若存在 models，用它解析出「当前生效」的 api_base / model / api_key。
     # 放在环境变量之前，保证环境变量仍然拥有最高优先级（便于临时覆盖 / 保密）。

@@ -25,6 +25,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 import config
+import companions
 import key_utils
 import paths
 
@@ -253,8 +254,10 @@ class _ScrollList:
 class _Editor:
     """设置页控制器：提示词 + 模型与 Key 两个页签。"""
 
-    def __init__(self, root, tab="author"):
+    def __init__(self, root, tab="author", on_saved=None):
         self.root = root
+        self._on_saved = on_saved                     # 智能伙伴保存后的通知回调（热切换用）
+        self._preview = None                          # 智能伙伴页预览动画播放状态
         self.editor_font = _pick_editor_font(root, 10)
         self.prompt_var = tk.StringVar(master=root)      # 选中的提示词 id
         self.prompt_search_var = tk.StringVar(master=root)
@@ -302,7 +305,8 @@ class _Editor:
                  font=TITLE_FONT, anchor="w", padx=20, pady=24).pack(fill="x")
         self.nav_btns = {}
         for key, label in (("prompts", "提示词"), ("contacts", "联系人规则"),
-                           ("models", "模型与 Key"), ("usage", "使用方法"),
+                           ("companion", "智能伙伴"), ("models", "模型与 Key"),
+                           ("usage", "使用方法"),
                            ("author", "软件作者")):
             btn = tk.Label(nav, text=label, bg="#f0f1f2", fg=TEXT,
                            font=LABEL_FONT, anchor="w", padx=20, pady=13,
@@ -315,11 +319,13 @@ class _Editor:
         self.body.grid(row=0, column=1, sticky="nsew")
         self.tab_prompts = tk.Frame(self.body, bg=BG)
         self.tab_contacts = tk.Frame(self.body, bg=BG)
+        self.tab_companion = tk.Frame(self.body, bg=BG)
         self.tab_models = tk.Frame(self.body, bg=BG)
         self.tab_usage = tk.Frame(self.body, bg=BG)
         self.tab_author = tk.Frame(self.body, bg=BG)
         self._build_prompts_tab()
         self._build_contact_rules_tab()
+        self._build_companion_tab()
         self._build_models_tab()
         self._build_usage_tab()
         self._build_author_tab()
@@ -327,6 +333,7 @@ class _Editor:
         self.tabs = {
             "prompts": self.tab_prompts,
             "contacts": self.tab_contacts,
+            "companion": self.tab_companion,
             "models": self.tab_models,
             "usage": self.tab_usage,
             "author": self.tab_author,
@@ -342,6 +349,8 @@ class _Editor:
             return
         if not self._confirm_leave_current():
             return
+        if getattr(self, "current_tab", None) == "companion" and key != "companion":
+            self._preview_stop()            # 离开智能伙伴页即停掉预览动画
         for k, btn in self.nav_btns.items():
             active = (k == key)
             btn.configure(bg=ACCENT if active else "#f0f1f2",
@@ -419,6 +428,7 @@ class _Editor:
             except Exception:
                 pass
             self._flash_job = None
+        self._preview_stop()               # 智能伙伴预览动画同样不能带进 destroy
 
     def _on_qr_enter(self, widget, asset):
         try:
@@ -1056,6 +1066,266 @@ class _Editor:
 
     # ================= 模型与 Key 页签 =================
 
+    # ================= 智能伙伴页签 =================
+
+    def _current_character(self):
+        cfg = config.load_config()
+        comp = cfg.get("companion") or {}
+        return str(comp.get("character", "robot"))
+
+    def _current_hover(self):
+        cfg = config.load_config()
+        comp = cfg.get("companion") or {}
+        return bool(comp.get("dance_enabled", comp.get("dance_on_hover", True)))
+
+    def _build_companion_tab(self):
+        wrap = tk.Frame(self.tab_companion, bg=BG)
+        wrap.pack(fill="both", expand=True)
+        wrap.columnconfigure(0, weight=0, minsize=300)
+        wrap.columnconfigure(1, weight=1)
+        wrap.rowconfigure(0, weight=1)
+
+        # 左栏：皮肤卡片
+        left = tk.Frame(wrap, bg=PANEL, highlightbackground=BORDER,
+                        highlightthickness=1)
+        left.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=14)
+        tk.Label(left, text="伙伴形象", bg=PANEL, fg=TEXT, font=TITLE_FONT,
+                 anchor="w", padx=16, pady=10).pack(fill="x")
+        tk.Label(left, text="右下角浮动伙伴的皮肤，点选立即生效并保存。",
+                 bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="w",
+                 padx=16, wraplength=252,
+                 justify="left").pack(fill="x", pady=(0, 10))
+
+        self.companion_var = tk.StringVar(master=self.root,
+                                          value=self._current_character())
+        self.companion_hover_var = tk.BooleanVar(master=self.root,
+                                                 value=self._current_hover())
+        self.companion_cards = {}
+        for item in companions.available_companions():
+            card = self._build_companion_card(left, item)
+            card.pack(fill="x", padx=12, pady=(0, 10))
+
+        # 右栏：状态预览 + 彩蛋开关
+        right = tk.Frame(wrap, bg=BG)
+        right.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=14)
+
+        panel = tk.Frame(right, bg=PANEL, highlightbackground=BORDER,
+                         highlightthickness=1)
+        panel.pack(fill="x")
+        tk.Label(panel, text="状态预览", bg=PANEL, fg=TEXT, font=LABEL_FONT,
+                 anchor="w", padx=16, pady=10).pack(fill="x")
+        btns = tk.Frame(panel, bg=PANEL)
+        btns.pack(fill="x", padx=12)
+        self._preview_state_btns = {}
+        for state, label in (("idle", "待命"), ("working", "工作"),
+                             ("dance", "跳舞")):
+            b = _mk_btn(btns, label,
+                        lambda s=state: self._preview_state(s),
+                        "secondary", width=7)
+            b.pack(side="left", padx=4)
+            self._preview_state_btns[state] = b
+
+        self.preview_label = tk.Label(panel, bg=PANEL)
+        self.preview_label.pack(pady=12)
+        self.preview_hint = tk.Label(panel, text="", bg=PANEL, fg=MUTED,
+                                     font=SMALL_FONT, anchor="w", padx=16,
+                                     justify="left",
+                                     wraplength=380)
+        self.preview_hint.pack(fill="x", pady=(0, 10))
+
+        opt = tk.Frame(right, bg=PANEL, highlightbackground=BORDER,
+                       highlightthickness=1)
+        opt.pack(fill="x", pady=(10, 0))
+        self.companion_hover_chk = tk.Checkbutton(
+            opt, text="右键点击伙伴时跳舞（企鹅专属彩蛋）",
+            variable=self.companion_hover_var,
+            command=self._on_hover_toggle,
+            bg=PANEL, fg=TEXT, font=LABEL_FONT, activebackground=PANEL,
+            anchor="w", padx=16, pady=10, cursor="hand2",
+            selectcolor="#ffffff")
+        self.companion_hover_chk.pack(fill="x")
+        self.companion_hover_hint = tk.Label(
+            opt, text="仅企鹅皮肤可用；关闭后右键不再触发舞蹈。",
+            bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="w",
+            padx=16)
+        self.companion_hover_hint.pack(fill="x", pady=(0, 10))
+
+        self._refresh_companion_cards()
+        self._refresh_companion_states()
+        self._preview_state("idle")
+
+    def _build_companion_card(self, parent, item):
+        cid = item["id"]
+        card = tk.Frame(parent, bg=CARD_BG, highlightbackground=BORDER,
+                        highlightthickness=1, cursor="hand2")
+        card.columnconfigure(1, weight=1)
+        poster = self._load_companion_poster(cid)
+        self.companion_cards[cid] = {"frame": card, "poster": poster}
+        if poster is not None:
+            pic = tk.Label(card, image=poster, bg=CARD_BG)
+        else:
+            pic = tk.Label(card, text=item["name"][0], bg=ACTIVE_BG,
+                           fg=TEXT, font=TITLE_FONT, width=3, height=2)
+        pic.grid(row=0, column=0, rowspan=2, padx=10, pady=10, sticky="n")
+        title = tk.Label(card, text=item["name"], bg=CARD_BG, fg=TEXT,
+                         font=LABEL_FONT, anchor="w")
+        title.grid(row=0, column=1, sticky="w", pady=(10, 0))
+        badge_txt = ("待命 ×2 轮播 · 工作 · hover 彩蛋"
+                     if item["has_dance"] else "待命 · 工作")
+        badge = tk.Label(card, text=badge_txt, bg=CARD_BG, fg=MUTED,
+                         font=SMALL_FONT, anchor="w")
+        badge.grid(row=1, column=1, sticky="w", pady=(0, 10))
+        for w in (card, pic, title, badge):
+            w.bind("<Button-1>", lambda _e, c=cid: self._select_companion(c))
+        return card
+
+    def _load_companion_poster(self, cid):
+        """皮肤卡片缩略图：取该皮肤待命动画第一帧。"""
+        skin = companions.COMPANIONS.get(cid)
+        if not skin:
+            return None
+        try:
+            from PIL import Image, ImageTk
+            p = paths.companion_asset(skin["idle"][0])
+            with Image.open(p) as im:
+                fr = im.convert("RGBA").resize((72, 72), Image.LANCZOS)
+            return ImageTk.PhotoImage(fr, master=self.root)
+        except Exception:
+            return None
+
+    def _refresh_companion_cards(self):
+        cur = self.companion_var.get()
+        for cid, entry in self.companion_cards.items():
+            active = (cid == cur)
+            entry["frame"].configure(
+                highlightbackground=ACTIVE_BORDER if active else BORDER,
+                highlightcolor=ACTIVE_BORDER if active else BORDER)
+
+    def _refresh_companion_states(self):
+        """按当前皮肤刷新：跳舞按钮与彩蛋开关的可用态。"""
+        cid = self.companion_var.get()
+        skin = companions.COMPANIONS.get(cid) or {}
+        has_dance = bool(skin.get("dance"))
+        try:
+            self._preview_state_btns["dance"].configure(
+                state="normal" if has_dance else "disabled")
+            self.companion_hover_chk.configure(
+                state="normal" if has_dance else "disabled")
+        except Exception:
+            pass
+        if not has_dance:
+            self.companion_hover_hint.configure(
+                text="当前皮肤没有 hover 彩蛋（仅企鹅提供）。")
+        else:
+            self.companion_hover_hint.configure(
+                text="仅企鹅皮肤可用；关闭后右键不再触发舞蹈。")
+
+    def _select_companion(self, cid):
+        if cid == self.companion_var.get():
+            return
+        self.companion_var.set(cid)
+        self._refresh_companion_cards()
+        self._refresh_companion_states()
+        self._save_companion_settings()
+        self._preview_state("idle")
+
+    def _on_hover_toggle(self):
+        self._save_companion_settings()
+
+    def _save_companion_settings(self):
+        partial = {"companion": {
+            "character": self.companion_var.get(),
+            "dance_enabled": bool(self.companion_hover_var.get()),
+        }}
+        try:
+            config.update_config(partial)
+            self._flash("已保存，右下角伙伴即时切换", "ok")
+            self._notify_saved()
+        except Exception as e:
+            self._flash("保存失败：%s" % e, "err")
+
+    def _notify_saved(self):
+        cb = self._on_saved
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            pass                       # 通知失败不影响保存本身
+
+    # ---------- 状态预览动画 ----------
+
+    def _preview_paths(self, state):
+        cid = self.companion_var.get()
+        skin = companions.COMPANIONS.get(cid)
+        if skin is None:                     # 自定义皮肤（旧键覆盖）
+            spec = companions.resolve(config.load_config())
+            return {"idle": list(spec.idle), "working": [spec.working],
+                    "dance": []}.get(state, [])
+        if state == "idle":
+            return [str(paths.companion_asset(p)) for p in skin["idle"]]
+        if state == "working":
+            return [str(paths.companion_asset(skin["working"]))]
+        if state == "dance" and skin.get("dance"):
+            return [str(paths.companion_asset(skin["dance"]))]
+        return []
+
+    def _preview_state(self, state):
+        plist = self._preview_paths(state)
+        if not plist:
+            self._preview_stop()
+            self.preview_label.configure(image="", text="该皮肤没有此状态的动画")
+            return
+        labels = {"idle": "待命", "working": "工作", "dance": "跳舞"}
+        self.preview_hint.configure(
+            text="%s · 共 %d 段动画" % (labels.get(state, state), len(plist)))
+        self._preview_play(plist)
+
+    def _preview_play(self, plist):
+        self._preview_stop()
+        frames, durs = [], []
+        try:
+            from PIL import Image, ImageTk
+            for p in plist:
+                with Image.open(p) as im:
+                    n = getattr(im, "n_frames", 1)
+                    step = max(1, n // 72)          # 大动画抽帧预览，控制内存
+                    for i in range(0, n, step):
+                        im.seek(i)
+                        fr = im.convert("RGBA").resize(
+                            (168, 168), Image.LANCZOS)
+                        frames.append(ImageTk.PhotoImage(fr, master=self.root))
+                        durs.append(max(20, int(
+                            im.info.get("duration", 83)) * step))
+        except Exception as e:
+            self._flash("预览加载失败：%s" % e, "err")
+            return
+        if not frames:
+            return
+        self._preview = {"frames": frames, "durs": durs, "idx": 0, "job": None}
+        self._preview_tick()
+
+    def _preview_tick(self):
+        pv = self._preview
+        if pv is None:
+            return
+        try:
+            self.preview_label.configure(image=pv["frames"][pv["idx"]])
+        except Exception:
+            self._preview = None
+            return
+        pv["idx"] = (pv["idx"] + 1) % len(pv["frames"])
+        pv["job"] = self.root.after(pv["durs"][pv["idx"]], self._preview_tick)
+
+    def _preview_stop(self):
+        pv = self._preview
+        if pv and pv.get("job") is not None:
+            try:
+                self.root.after_cancel(pv["job"])
+            except Exception:
+                pass
+        self._preview = None
+
     def _build_models_tab(self):
         wrap = tk.Frame(self.tab_models, bg=BG)
         wrap.pack(fill="both", expand=True)
@@ -1628,7 +1898,7 @@ class _Editor:
             ("note", "使用润色或草拟功能需要联网访问当前配置的大模型服务。OCR 在本机完成；生成回复时，草稿和读取到的聊天上下文会发送给该模型服务。请勿输入不希望发送给该服务的信息。"),
         ])
         section("退出与卸载", [
-            ("body", "退出助手：鼠标悬停在右下角动图上，点击浮出的红色「×」。"),
+            ("body", "退出助手：鼠标移到右下角动图上，点击浮出的红色「×」。"),
             ("body", "卸载安装版：从开始菜单或 Windows「已安装的应用」中卸载。便携版可删除 exe；配置和日志保存在 %LOCALAPPDATA%\\ai-reply-helper，如不再需要，可自行删除该文件夹。"),
         ])
 
@@ -2270,8 +2540,12 @@ class _QrHoverPreview:
             self.photo = None
 
 
-def open_editor(tab="author"):
-    """打开设置页（由 main.py 在独立线程中调用）。"""
+def open_editor(tab="author", on_saved=None):
+    """打开设置页（由 main.py 在独立线程中调用）。
+
+    on_saved: 智能伙伴设置保存后的通知回调（main.py 用来做托盘热切换），
+              在编辑器所在线程被调用，回调内不得直接操作其他线程的 Tk。
+    """
     config.ensure_prompts_seeded()
     config.ensure_models_seeded()
 
@@ -2297,5 +2571,5 @@ def open_editor(tab="author"):
     except Exception:
         pass
 
-    _Editor(root, tab=tab)
+    _Editor(root, tab=tab, on_saved=on_saved)
     root.mainloop()

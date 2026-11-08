@@ -148,9 +148,14 @@ def _make_close_button(root, size, on_click):
 
 
 class TrayWidget:
-    def __init__(self, idle_path, active_path, size=220, pos=None, on_move=None):
-        self.idle_path = idle_path
+    def __init__(self, idle_paths, active_path, size=220, pos=None, on_move=None,
+                 dance_path=None, dance_enabled=False):
+        # idle 支持多段轮播（企鹅待命=举星星/水晶球两段交替）
+        self.idle_paths = [str(p) for p in (
+            idle_paths if isinstance(idle_paths, (list, tuple)) else [idle_paths])]
         self.active_path = active_path
+        self.dance_path = dance_path                # 右键彩蛋动画（None 表示无）
+        self.dance_enabled = bool(dance_enabled)
         self.size = int(size)
         self._cmd = queue.Queue()
         self._cache = {}           # name -> (frames, durs)，解码完成后缓存
@@ -300,6 +305,23 @@ class TrayWidget:
 
         state = {"path": None, "frames": [], "durs": [], "idx": 0, "after_id": None}
 
+        # 各状态 → 资源文件列表。idle 允许多段（顺序轮播）；dance 为右键彩蛋
+        paths_by_name = {
+            "idle": list(self.idle_paths),
+            "active": [self.active_path],
+            "dance": [self.dance_path] if self.dance_path else [],
+        }
+
+        def _iter_frames(plist):
+            """依次产出多段动画的所有帧（供 idle 多段轮播）。"""
+            for p in plist:
+                try:
+                    with Image.open(p) as im:
+                        for fr in ImageSequence.Iterator(im):
+                            yield fr
+                except Exception as e:
+                    log.warning(f"托盘动图加载失败 {p}: {e}")
+
         def animate():
             frames = state["frames"]
             if not frames:
@@ -329,10 +351,8 @@ class TrayWidget:
                 if ld["frames"]:
                     label.configure(image=ld["frames"][0])
                 return
-            path = self.idle_path if name == "idle" else self.active_path
-            im = Image.open(path)
             self._pending[name] = {
-                "it": iter(ImageSequence.Iterator(im)),
+                "it": _iter_frames(paths_by_name.get(name) or []),
                 "frames": [], "durs": [], "g": 0, "done": False, "shown": False,
             }
             _load_tick(name)
@@ -378,6 +398,32 @@ class TrayWidget:
             state["path"] = name
             _begin_load(name)
 
+        # ---- 右键彩蛋（企鹅专属）：右键点击切换 跳舞↔原状态 ----
+        # dance 是覆盖层而非新状态：进入时记住原状态，再次右键恢复原状态；
+        # 若跳舞期间外部指令改了状态（如按下热键），prev 跟随最新指令，避免回退错状态。
+        dance = {"prev": None}
+
+        def _on_right_click(_e):
+            if not self.dance_path or not self.dance_enabled or drag["active"]:
+                # 企鹅皮肤但被开关关闭时也记录一下，便于排查"点了没反应"
+                if self.dance_path and not self.dance_enabled:
+                    log.info("右键彩蛋被忽略：dance_enabled=False（设置页可开启）")
+                return
+            if dance["prev"] is None and state["path"] != "dance":
+                dance["prev"] = state["path"]
+                set_state("dance")
+                log.info("右键彩蛋：开始跳舞")
+            else:
+                prev = dance["prev"] or "idle"
+                dance["prev"] = None
+                set_state(prev)
+                log.info("右键彩蛋：恢复 %s 状态" % prev)
+
+        # 只绑 label（铺满整个窗口）。不要同时绑 root：Tk 的 bindtag 会让
+        # label 上的事件继续冒泡到 root，同一击会执行两遍 toggle（开→关），
+        # 表现为"点一下跳舞瞬间又变回待命"。
+        label.bind("<ButtonPress-3>", _on_right_click, add="+")
+
         def poll():
             try:
                 while True:
@@ -398,8 +444,35 @@ class TrayWidget:
                         return
                     elif cmd == "idle":
                         set_state("idle")
+                        if dance["prev"] is not None:
+                            dance["prev"] = "idle"   # 跳舞中收到指令：跟随最新状态
                     elif cmd == "active":
                         set_state("active")
+                        if dance["prev"] is not None:
+                            dance["prev"] = "active"
+                    elif cmd == "swap":
+                        # 设置页保存后的热切换：换皮肤资源，清缓存，回到待命重新加载
+                        try:
+                            idle_paths, active_path, dance_path, enabled_flag = item[1]
+                            self.idle_paths = list(idle_paths)
+                            self.active_path = active_path
+                            self.dance_path = dance_path
+                            self.dance_enabled = bool(enabled_flag)
+                            paths_by_name["idle"] = list(self.idle_paths)
+                            paths_by_name["active"] = [self.active_path]
+                            paths_by_name["dance"] = ([self.dance_path]
+                                                      if self.dance_path else [])
+                            dance["prev"] = None
+                            self._cache.clear()
+                            self._pending.clear()
+                            state["frames"] = []
+                            state["durs"] = []
+                            state["idx"] = 0
+                            state["path"] = None
+                            set_state("idle")
+                            log.info("托盘伙伴已热切换")
+                        except Exception as e:
+                            log.warning(f"热切换伙伴失败: {e}")
                     elif cmd == "ui":
                         # 在主线程（本 Tcl 解释器）执行弹框构建回调，
                         # 避免业务线程新建 Tk 导致 “Calling Tcl from different
@@ -426,6 +499,18 @@ class TrayWidget:
     def set_command(self, fn):
         """设置点击动图时的回调（由 main.py 注入，与热键等价触发 AI 流程）。"""
         self._command = fn
+
+    def swap_companion(self, idle_paths, active_path, dance_path=None,
+                       dance_enabled=False):
+        """设置页保存后热切换伙伴皮肤（线程安全，仅入队）。
+
+        idle_paths: 待命动画列表（企鹅为两段轮播，机器人为单段）
+        active_path: 工作动画
+        dance_path: 右键彩蛋动画（None 表示该皮肤无彩蛋）
+        dance_enabled: 是否启用右键点击跳舞
+        """
+        self._cmd.put(("swap", (list(idle_paths), active_path, dance_path,
+                                bool(dance_enabled))))
 
     def _save_pos(self, x, y):
         """拖动结束时记录图标位置：内存兜底 + 交给调用方持久化。
@@ -468,13 +553,23 @@ class TrayWidget:
         self._cmd.put(("quit", None))
 
 
-def make_tray(idle_path, active_path, size=220, pos=None, on_move=None):
+def make_tray(idle_paths, active_path, size=220, pos=None, on_move=None,
+              dance_path=None, dance_enabled=False):
     """工厂：文件缺失或初始化失败时返回 None（不影响主流程）。
 
+    idle_paths: 待命动画路径（可传列表做多段轮播）
+    active_path: 工作动画路径
+    dance_path: 右键彩蛋动画（可选，缺省不启用）
+    dance_enabled: 右键点击是否播放彩蛋
     pos:     上次保存的图标位置 (x, y)；缺省或非法时用默认右下角
     on_move: 拖动结束时的回调 (x, y)，由调用方持久化（写入 config.json）
     """
-    if not (idle_path and os.path.exists(idle_path) and os.path.exists(active_path)):
-        print(f"[tray] 动图缺失（{idle_path} / {active_path}），跳过右下角动图。")
+    plist = ([str(p) for p in idle_paths]
+             if isinstance(idle_paths, (list, tuple)) else [str(idle_paths)])
+    missing = [p for p in plist + [active_path]
+               if not (p and os.path.exists(p))]
+    if missing:
+        print(f"[tray] 动图缺失（{missing}），跳过右下角动图。")
         return None
-    return TrayWidget(idle_path, active_path, size=size, pos=pos, on_move=on_move)
+    return TrayWidget(plist, active_path, size=size, pos=pos, on_move=on_move,
+                      dance_path=dance_path, dance_enabled=dance_enabled)

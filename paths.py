@@ -94,3 +94,22 @@ def asset(name: str) -> Path:
     except Exception:
         pass
     return resource_dir() / name
+
+
+def companion_asset(rel: str) -> Path:
+    """定位智能伙伴资源（如 "penguin/idle_a.webp"）。
+
+    与 asset() 同一策略：程序同目录的 companions/ 优先（用户免打包换肤），
+    找不到再用打包进 exe 的内部 companions/。
+    """
+    rel = rel.lstrip("/\\").replace("/", os.sep)
+    try:
+        if is_frozen():
+            external = Path(sys.executable).resolve().parent / "companions" / rel
+        else:
+            external = Path(__file__).resolve().parent / "companions" / rel
+        if external.exists():
+            return external
+    except Exception:
+        pass
+    return resource_dir() / "companions" / rel

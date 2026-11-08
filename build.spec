@@ -19,6 +19,7 @@ from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, collect_s
 datas = [
     ("1.webp", "."),
     ("2.webp", "."),
+    ("companions", "companions"),  # 智能伙伴皮肤资源（robot/penguin 两套动图）
     ("config.example.json", "."),
     ("author_qrcode.png", "."),   # 设置页「作者微信公众号」二维码
     ("icon.ico", "."),            # 回复窗口中的 AI 头像
