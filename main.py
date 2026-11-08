@@ -36,7 +36,7 @@ _lock = threading.Lock()
 _config_lock = threading.Lock()  # 防止配置页重复打开
 
 # 版本标识：每次启动写入日志，便于确认当前运行版本。
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v2.0.0"
 
 _LOCK_PATH = paths.lock_path()
 
