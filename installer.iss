@@ -3,7 +3,7 @@
 ; 用法：ISCC installer.iss   （产出 dist\Setup_会聊.exe）
 
 #define MyAppName "会聊"
-#define MyAppVersion "2.0.5"
+#define MyAppVersion "2.0.6"
 #define MyAppPublisher "AI探员"
 #define MyAppExeName "会聊.exe"
 #define MyAppDirName "ai-reply-helper"

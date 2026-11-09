@@ -19,6 +19,7 @@ import math
 import pyperclip
 from PIL import Image, ImageTk
 from paths import asset
+from build_info import APP_VERSION
 
 # ---- 微信 AI 回复面板设计令牌 ----
 PAGE = "#F5F6F7"
@@ -646,7 +647,7 @@ def show_choices(versions, on_choose, master=None, on_close=None,
     if not versions:
         return
     root = tk.Toplevel(master) if master is not None else tk.Tk()
-    root.title("AI 回复建议")
+    root.title(f"AI 回复建议（{APP_VERSION}）")
     root.attributes("-topmost", True)
     root.geometry("568x760")
     root.minsize(480, 360)
@@ -676,9 +677,11 @@ def show_error(msg, master=None, on_close=None):
     关闭时触发 on_close（如 tray.show_idle()）。
     """
     root = tk.Toplevel(master) if master is not None else tk.Tk()
-    root.title("会聊 - 提示")
+    # 标题带版本号：用户截图报障时，能直接看出跑的是哪一版
+    # （踩过：对方机器上其实是旧包 v1.0.0，双方都以为在验证新版本）。
+    root.title(f"会聊 - 提示（{APP_VERSION}）")
     root.attributes("-topmost", True)
-    root.geometry("430x260")
+    root.geometry("430x300")   # 比 260 高一点：提示文案多了一行版本号/日志提示
     try:
         root.iconify()
         root.deiconify()

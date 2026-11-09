@@ -269,6 +269,11 @@ def _read_via_uia(n):
             f"读取到 {len(picked)} 条聊天上下文（UIA 扁平模式，"
             f"遍历 {visited} 节点、收集 {len(dedup)} 段文本）"
         )
+        # 诊断用：万一日后又有新的界面标签形态漏过 _is_chrome_text，
+        # 光看「读取到 N 条」是查不出问题的（踩过：远程机器只给 2 段标签，
+        # 表现成「读到了聊天文字但无法确认谁说的」）。这里把内容打出来。
+        preview = " | ".join(p.replace("\n", " ")[:20] for p in picked[:3])
+        log.info(f"UIA 扁平模式文本预览: {preview[:60]}")
         return "\n".join(picked)
     if dropped or visited:
         log.info(

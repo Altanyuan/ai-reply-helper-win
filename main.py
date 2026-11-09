@@ -15,6 +15,7 @@ import companions
 import first_run
 import paths
 import wechat_window
+from build_info import APP_VERSION as _APP_VERSION
 from capturer import capture_draft, read_wechat_recent_with_title, read_wechat_input
 from ai_client import has_speaker_labels, polish
 from contact_rules import config_for_prompt, resolve_prompt_id
@@ -36,18 +37,8 @@ _lock = threading.Lock()
 _config_lock = threading.Lock()  # 防止配置页重复打开
 
 # 版本标识：每次启动写入日志，便于确认当前运行版本。
-# v2.0.1：修复微信 4.x 下 UIA 把界面标签当聊天上下文、导致 4.x 采集被短路
-#         （表现为「无法确认哪些是对方发的」以及昵称一直显示「未识别」）。
-# v2.0.2：修正标题合并只会向右拼接，避免把标题栏左侧的图标字粘到昵称末尾。
-# v2.0.3：消息区左侧边界改用「最长连续同色段」，避免同色的左侧图标栏把边界拉到
-#         窗口最左、导致定位失败并退化到写死比例，把会话列表文字裁进上下文。
-# v2.0.4：润色/草拟提示词加硬约束（不加标题旁白、不替用户补主语、信息不足不下结论），
-#         并把多给的版本按配置截断。
-# v2.0.5：消息区边界允许 ≤6% 帧宽空洞 + 阈值逐级放宽，并加宽高比例校验（防止把
-#         右侧空白带当消息区）；识别为空时用宽区域重试；启动预热 OCR 引擎；
-#         抓取宽限 3s→20s，超时置位 cancel 让后台线程收手；修正超时提示的
-#         window_found（原来写死 False，把「读图慢」误报成「主窗口定位失败」）。
-APP_VERSION = "v2.0.5"
+# 版本号与版本沿革统一放在 build_info.py（ui.py 也要用，不能反向 import main）。
+APP_VERSION = _APP_VERSION
 
 _LOCK_PATH = paths.lock_path()
 
@@ -304,7 +295,8 @@ def _handle():
             def _e_roles():
                 show_error(
                     "读到了聊天文字，但无法确认哪些是对方发的，暂不自动草拟回复。\n\n"
-                    "请确认微信聊天内容可见后重试，或把对方最近的话粘进输入框。",
+                    "请确认微信聊天内容可见后重试，或把对方最近的话粘进输入框。\n\n"
+                    f"（当前版本 {APP_VERSION}；若反复出现，把 polish.log 发给作者）",
                     master=tray.get_root() if tray else None,
                     on_close=lambda: tray.show_idle() if tray else None,
                 )
