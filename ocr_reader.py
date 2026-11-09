@@ -28,6 +28,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 
 log = logging.getLogger("polish")
@@ -467,6 +468,29 @@ def _get_rapid_engine():
         return None
 
 
+def warm_up_async():
+    """后台预热主 OCR 引擎（幂等，失败不影响主流程）。
+
+    为什么需要（2026-11-09 实测）：RapidOCR 首次初始化要加载 ONNX Runtime 会话和
+    检测/识别模型，冷启动 5~8 秒。这段开销如果落在热键触发的抓取里，会直接吃掉
+    抓取预算 —— 那台机器日志里「18:50:21 OCR 主引擎就绪」正是压在热键路径上，
+    紧接着就是 10 秒超时报错。启动时后台预热一次，把这段挪出热键路径。
+    """
+    def _run():
+        try:
+            # 只预热 RapidOCR（纯 ONNX，无 COM/线程亲和要求）。WinRT 后端依赖
+            # asyncio + COM 单元，放到后台线程反而可能踩「未初始化」，
+            # 而且它初始化只要 30ms（实测），留在按需加载即可。
+            if _get_rapid_engine() is not None:
+                log.info("OCR 预热完成（热键触发时不再等引擎初始化）")
+        except Exception as e:
+            log.warning("OCR 预热失败（不影响主流程）: %s: %s", type(e).__name__, e)
+
+    t = threading.Thread(target=_run, name="ocr-warmup", daemon=True)
+    t.start()
+    return t
+
+
 def _recognize_boxes_rapid(img):
     """RapidOCR 识别 PIL 图像，返回 [(文本, (x0, y0, x1, y1))]。"""
     engine = _get_rapid_engine()
@@ -655,17 +679,25 @@ def _is_cjk(ch):
     )
 
 
-def read_chat_context(hwnd, max_messages=None):
+def read_chat_context(hwnd, max_messages=None, cancel=None):
     """OCR 读取带说话人标签的微信聊天上下文。
 
     参数：
       hwnd: 微信主窗口句柄（用于截图定位）
       max_messages: 可选的最多返回条数；None 表示返回全部识别到的消息
+      cancel: 可选的 threading.Event；上层超时放弃后置位，用于尽快中断识别
 
     返回：标注「我 / 对方」的最近消息；无法可靠分类时返回 ""，不发送无标签文本。
     """
     if not hwnd:
         return ""
+
+    def _stopped():
+        try:
+            return bool(cancel is not None and cancel.is_set())
+        except Exception:
+            return False
+
     img = _grab_window_image(hwnd)
     if img is None:
         return ""
@@ -697,6 +729,9 @@ def read_chat_context(hwnd, max_messages=None):
 
     if chat.size == 0:
         log.info("OCR 聊天区为空")
+        return ""
+    if _stopped():
+        log.info("本次抓取已被上层取消，跳过 OCR 识别")
         return ""
 
     from PIL import Image

@@ -77,8 +77,8 @@ DEFAULTS = {
     "model": "deepseek-chat",
     "versions": 3,
     "hotkey": "ctrl+alt+p",
-    "grab_timeout": 10,          # 触发后等待/重试获取微信内容的最长秒数，超时才弹提示框
-    "ocr_context": True,         # 微信 4.x 不暴露 UIA 控件，是否允许用 OCR 读取聊天上下文（WGC/截屏两条后端都走它）
+    "grab_timeout": 10,          # 「等微信窗口出现」的最长秒数；窗口出现后的读图另给 20s 宽限（main._GRAB_GRACE）
+    "ocr_context": True,         # 微信 4.x 不向 UIA 暴露聊天控件，是否允许用截图识别读上下文（WGC/截屏两条后端都走它）
     # 微信 4.x 的采集后端（3.x 一律走 UIA 直读，不受此项影响）：
     #   wgc = WGC 窗口捕获 + 像素锚点定位（推荐：被遮挡也能截、不抢前台不打断打字、识别更准）
     #   ocr = 旧版截屏 OCR（需要窗口在前台且不被遮挡，留作回退）

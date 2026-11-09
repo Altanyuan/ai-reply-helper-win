@@ -36,7 +36,7 @@ _lock = threading.Lock()
 _config_lock = threading.Lock()  # 防止配置页重复打开
 
 # 版本标识：每次启动写入日志，便于确认当前运行版本。
-APP_VERSION = "v2.0.0"
+APP_VERSION = "v2.0.5"
 
 _LOCK_PATH = paths.lock_path()
 
@@ -120,7 +120,11 @@ def _hotkey_to_pynput(hk):
 
 
 _POLL_INTERVAL = 0.4      # 轮询微信窗口是否出现的间隔（秒）
-_GRAB_GRACE = 3.0         # 窗口出现后，留给实际抓取内容的宽限时间（秒）
+# 窗口出现后，留给实际抓取内容的宽限时间（秒）。
+# 2026-11-09 实测：慢机器上一帧 WGC + RapidOCR 要 17~27 秒（引擎冷启动 8s +
+# 2x 放大识别），原来只给 3 秒，导致明明能读到却在 13 秒时被判超时。
+# 现在启动时预热引擎（把 8s 挪走），再给 20 秒宽限，正常机器 2~4 秒就返回。
+_GRAB_GRACE = 20.0
 
 
 def _grab_wechat(cfg, timeout=10.0):
@@ -136,12 +140,18 @@ def _grab_wechat(cfg, timeout=10.0):
     返回：
       {"context": str, "draft": str}            成功
       {"__timeout__": True, "window_found": b}  超时/失败（b 表示期间是否曾检测到窗口）
-    超时后本函数立即返回（不阻塞触发线程），后台线程自行结束。
+    超时后本函数立即返回（不阻塞触发线程），并置位 cancel 让后台线程尽快退出。
     """
     result_q = _queue.Queue()
+    # 超时后置位：采集链（capturer / capture_wgc / ocr_reader）逐层检查它，
+    # 一旦发现上层已经放弃就立刻收手 —— 否则后台线程会继续跑十几秒 OCR，
+    # 与下一次热键叠加抢 CPU（实测「越点越慢」就是这么来的）。
+    cancel = threading.Event()
+    # 用可变容器把「是否检测到窗口」回传给超时路径：原来这里写死 False，
+    # 导致明明窗口找到了、UIA 也读了，却报「主窗口定位失败」，把排查方向带偏。
+    found = {"window": False}
 
     def _worker():
-        window_found = False
         try:
             # 后台线程需自行初始化 COM 单元，否则 UIA 调用报
             # "尚未调用 CoInitialize"
@@ -157,7 +167,7 @@ def _grab_wechat(cfg, timeout=10.0):
                         # （4.x 用 Qt 重写，类名形如 Qt51514QWindowIcon 且随 Qt 版本变化）
                         win = wechat_window.find_wechat_control()
                         if win is not None:
-                            window_found = True
+                            found["window"] = True
                             hwnd = None
                             try:
                                 hwnd = int(win.NativeWindowHandle)
@@ -167,7 +177,14 @@ def _grab_wechat(cfg, timeout=10.0):
                                 use_ocr=bool(cfg.get("ocr_context", True)),
                                 hwnd=hwnd,
                                 backend=cfg.get("capture_4x", "wgc"),
+                                cancel=cancel,
                             )
+                            if cancel.is_set():
+                                # 上层已超时放弃（可能就在采集途中），结果没人要了
+                                log.info("本次抓取已被上层取消，丢弃结果")
+                                result_q.put({"__timeout__": True,
+                                              "window_found": found["window"]})
+                                return
                             d = read_wechat_input()
                             if not d or not d.strip():
                                 # 内部已对“无微信”做闸门，不会误发键
@@ -182,11 +199,11 @@ def _grab_wechat(cfg, timeout=10.0):
                     if time.time() >= deadline:
                         break
                     time.sleep(_POLL_INTERVAL)
-                result_q.put({"__timeout__": True, "window_found": window_found})
+                result_q.put({"__timeout__": True, "window_found": found["window"]})
         except Exception as e:
             log.exception(f"抓取微信上下文异常: {e}")
             try:
-                result_q.put({"__timeout__": True, "window_found": window_found})
+                result_q.put({"__timeout__": True, "window_found": found["window"]})
             except Exception:
                 pass
 
@@ -196,9 +213,13 @@ def _grab_wechat(cfg, timeout=10.0):
         # 硬兜底：等待窗口 timeout 秒 + 抓取宽限，避免极端情况下无限等待
         box = result_q.get(timeout=timeout + _GRAB_GRACE)
     except _queue.Empty:
-        # 超时：放弃等待，daemon 后台线程最终自行结束，不阻塞本线程
-        log.warning(f"获取微信窗口/上下文超时（>{timeout}s），放弃本次抓取")
-        return {"__timeout__": True, "window_found": False}
+        # 超时：放弃等待，通知后台线程收手（它会在下一个检查点退出）
+        log.warning(
+            f"获取微信窗口/上下文超时（窗口等待>{timeout:g}s，"
+            f"期间检测到窗口={found['window']}），放弃本次抓取"
+        )
+        cancel.set()
+        return {"__timeout__": True, "window_found": found["window"]}
     return box
 
 
@@ -221,16 +242,18 @@ def _handle():
     grabbed = _grab_wechat(cfg, timeout=timeout)
     if grabbed is None or grabbed.get("__timeout__"):
         window_found = bool(grabbed and grabbed.get("window_found"))
+        total = timeout + _GRAB_GRACE
         log.warning(
-            f"获取微信聊天窗口超时（>{timeout}s，期间检测到窗口={window_found}）"
+            f"获取微信聊天窗口超时（窗口等待>{timeout:.0f}s、合计>{total:.0f}s，"
+            f"期间检测到窗口={window_found}）"
         )
         if window_found:
             msg = (
-                f"已检测到微信，但在 {timeout:.0f} 秒内读取聊天内容失败。\n\n"
+                f"已定位到微信窗口，但 {total:.0f} 秒内没能读出聊天内容。\n\n"
                 "建议：\n"
                 "• 确认微信已登录并打开了具体的聊天窗口；\n"
                 "• 窗口未被最小化、卡死；\n"
-                "• 在输入框里写好草稿后重新按热键重试。"
+                "• 在输入框里写好草稿后重新按热键重试（有草稿时只润色，不依赖聊天记录）。"
             )
         elif wechat_window.is_wechat_running():
             # 微信进程在，但主窗口定位失败 —— 通常是缩在托盘里，或未知改版
@@ -241,7 +264,7 @@ def _handle():
                 "• 把微信主窗口从最小化/托盘状态恢复出来，不要缩在托盘里；\n"
                 "• 进入具体的聊天窗口后再重试；\n"
                 "• 若仍不行，可能是当前微信版本的窗口结构有变化，\n"
-                "  可查看 polish.log 里「微信窗口已定位」相关日志确认定位结果。"
+                "  可在 polish.log 里搜「消息列表已定位」「UIA 控件树」「WGC 采集」看走到哪一级。"
             )
         else:
             msg = (
@@ -285,9 +308,10 @@ def _handle():
                 "输入框为空，且没有读到可确认说话人的聊天上下文，无法生成。\n\n"
                 "请在微信输入框里写好草稿（哪怕几个关键词）再按热键；\n"
                 "若想结合聊天记录，请确认聊天窗口已打开且消息可见。\n\n"
-                "注：微信 4.x 界面不向系统暴露控件，程序改用「截屏识别」读取\n"
-                "聊天内容，需要系统安装中文 OCR 语言包；若未安装或识别失败，\n"
-                "会降级为「无上下文润色」——此时把对方的话粘进输入框即可。",
+                "注：微信 4.x 不向系统暴露聊天控件，程序改用「窗口截图识别」\n"
+                "（WGC 抓窗口 + 本机 OCR）读取内容；窗口最小化、聊天区被折叠，\n"
+                "或聊天内容极少时可能读不到，此时把对方的话粘进输入框即可。\n"
+                "排查可看 polish.log 里的「WGC 采集」与「UIA 控件树」两行。",
                 master=tray.get_root() if tray else None,
                 on_close=lambda: tray.show_idle() if tray else None,
             )
@@ -512,8 +536,11 @@ def main():
         try:
             import ocr_reader
             log.info(f"OCR 状态: {ocr_reader.ocr_status_text()}")
+            # 后台预热主引擎：RapidOCR 冷启动要 5~8 秒（ONNX 会话 + 模型加载），
+            # 落在热键路径上会直接吃掉抓取预算（实测 17~27 秒才出结果、然后超时）。
+            ocr_reader.warm_up_async()
         except Exception as e:
-            log.warning(f"OCR 状态探测失败（不影响主流程）: {e}")
+            log.warning(f"OCR 状态探测/预热失败（不影响主流程）: {e}")
 
     # 右下角浮动动图（智能伙伴）：待命=皮肤 idle（企鹅为双段轮播），
     # 工作=皮肤 working，企鹅另有右键舞蹈彩蛋。

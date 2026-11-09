@@ -11,6 +11,7 @@
 """
 import os
 import sys
+import threading
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,7 +21,7 @@ import capturer  # noqa: E402
 HWND = 12345
 
 
-def _run(uia, wgc=None, ocr=None, backend="wgc", use_ocr=True):
+def _run(uia, wgc=None, ocr=None, backend="wgc", use_ocr=True, cancel=None):
     """跑一次 read_wechat_recent，返回 (结果, 各路径的调用记录)。"""
     calls = {"uia": 0, "wgc": 0, "ocr": 0}
 
@@ -28,11 +29,11 @@ def _run(uia, wgc=None, ocr=None, backend="wgc", use_ocr=True):
         calls["uia"] += 1
         return uia
 
-    def _wgc_with_title(hwnd, n, include_messages=True):
+    def _wgc_with_title(hwnd, n, include_messages=True, cancel=None):
         calls["wgc"] += 1
         return ((wgc or "") if include_messages else ""), None
 
-    def _ocr(hwnd, n):
+    def _ocr(hwnd, n, cancel=None):
         calls["ocr"] += 1
         return ocr or ""
 
@@ -43,7 +44,7 @@ def _run(uia, wgc=None, ocr=None, backend="wgc", use_ocr=True):
                          side_effect=_wgc_with_title), \
             patch.object(capturer, "_read_via_screen_ocr", side_effect=_ocr):
         return capturer.read_wechat_recent(5, use_ocr=use_ocr, hwnd=HWND,
-                                           backend=backend), calls
+                                           backend=backend, cancel=cancel), calls
 
 
 def test_uia_hit_skips_wgc_entirely():
@@ -105,6 +106,27 @@ def test_wake_accessibility_still_runs_before_uia():
                          side_effect=lambda n: order.append("uia") or "命中"):
         capturer.read_wechat_recent(5, hwnd=HWND)
     assert order == ["wake", "uia"], order
+
+
+def test_cancel_before_wgc_skips_4x_paths():
+    """上层超时放弃后（cancel 已置位）：UIA 落空就直接收手，不再跑 WGC / 截屏 OCR。
+
+    没有这道闸门时，后台线程会在用户已经看到「超时」提示框后继续跑十几秒 OCR，
+    与下一次热键叠加抢 CPU（2026-11-09 两台机器日志里的 27s / 17.6s 就是这么来的）。
+    """
+    ev = threading.Event()
+    ev.set()
+    text, calls = _run(uia="", wgc="不该被调用", ocr="不该被调用", cancel=ev)
+    assert text == ""
+    assert calls == {"uia": 1, "wgc": 0, "ocr": 0}, calls
+
+
+def test_cancel_unset_still_runs_normal_ladder():
+    """cancel 存在但未置位：与不传完全一致（不能因为加了闸门就改变正常流程）。"""
+    ev = threading.Event()
+    text, calls = _run(uia="", wgc="对方：在吗", ocr="不该被调用", cancel=ev)
+    assert text == "对方：在吗"
+    assert calls == {"uia": 1, "wgc": 1, "ocr": 0}, calls
 
 
 if __name__ == "__main__":

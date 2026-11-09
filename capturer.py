@@ -1,3 +1,4 @@
+import re
 import time
 import logging
 import pyperclip
@@ -6,6 +7,43 @@ import uiautomation as auto
 import wechat_window
 
 log = logging.getLogger("polish")
+
+# 纯 ASCII 标识符（Qt 类名 / 进程名一类的界面噪声）
+_CHROME_IDENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _is_chrome_text(text, window_name=""):
+    """判断一段 UIA 文本是不是微信界面自身的标签，而不是聊天内容。
+
+    为什么需要它（实测）：微信 4.x（Qt）的根窗口只向 UIA 暴露 1~2 个 Pane 子节点，
+    名字形如 "Weixin"、"MMUIRenderSubWindowHW"，加上窗口标题「微信」，合计 2~3 段
+    文本。扁平收集原本只要求「>= 2 段」，于是把这些界面标签当成聊天上下文返回，
+    并**短路了 4.x 的 WGC / 截屏 OCR 采集**（那两条才是能产出「我：/对方：」
+    说话人标签的路径）。结果就是：输入框为空时上层判定「读到了聊天文字但无法
+    确认谁说的」，直接弹框拒绝草拟（微信 4.2.0.12 / 4.1.0.34 均复现）。
+
+    判定规则（都基于界面标签的形态，不依赖微信版本号）：
+      · 空文本 → 噪声；
+      · 与窗口标题完全相同 → 噪声（根窗口自身的 Name 就是标题）；
+      · 纯 ASCII 标识符且含大写字母或下划线 → 噪声（Qt 类名、进程名、控件名）。
+        真实英文聊天多为小写单词（ok / hello），不会命中。
+    """
+    s = (text or "").strip()
+    if not s:
+        return True
+    if window_name and s == window_name.strip():
+        return True
+    if _CHROME_IDENT_RE.match(s) and (any(c.isupper() for c in s) or "_" in s):
+        return True
+    return False
+
+
+def _stopped(cancel):
+    """上层已放弃本次抓取（超时）→ True。cancel 为 None 时永远 False。"""
+    try:
+        return bool(cancel is not None and cancel.is_set())
+    except Exception:
+        return False
 
 
 def _get_clipboard():
@@ -86,15 +124,16 @@ def capture_draft():
     return text.strip() if text else ""
 
 
-def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc"):
+def read_wechat_recent(n=None, use_ocr=True, hwnd=None, backend="wgc", cancel=None):
     """兼容旧调用方：返回微信当前聊天上下文。"""
     context, _title = read_wechat_recent_with_title(
-        n=n, use_ocr=use_ocr, hwnd=hwnd, backend=backend,
+        n=n, use_ocr=use_ocr, hwnd=hwnd, backend=backend, cancel=cancel,
     )
     return context
 
 
-def read_wechat_recent_with_title(n=None, use_ocr=True, hwnd=None, backend="wgc"):
+def read_wechat_recent_with_title(n=None, use_ocr=True, hwnd=None, backend="wgc",
+                                 cancel=None):
     """尽力读取微信消息上下文与本地聊天标题（读取不到标题则为 None）。
 
     **两条采集路径按「运行时能力探测」分流，互不干扰**（不解析微信版本号）：
@@ -116,6 +155,7 @@ def read_wechat_recent_with_title(n=None, use_ocr=True, hwnd=None, backend="wgc"
       use_ocr: 是否允许 4.x 路径用 OCR 读上下文（配置项 ocr_context）
       hwnd: 微信主窗口句柄；缺省时自行定位
       backend: 4.x 的采集后端，'wgc'（默认）或 'ocr'（配置项 capture_4x）
+      cancel: 可选的 threading.Event；上层超时放弃后置位，用于尽快中断采集线程
     """
     if n is not None:
         n = int(n)
@@ -132,19 +172,25 @@ def read_wechat_recent_with_title(n=None, use_ocr=True, hwnd=None, backend="wgc"
         text = _read_via_uia(n)
         if text:
             return text, None
+        if _stopped(cancel):
+            log.info("本次抓取已被上层取消，跳过 4.x 采集")
+            return "", None
 
         # ============ 4.x 路径：WGC 采集（Qt 自绘，UIA 拿不到控件树）============
         chat_title = None
         if str(backend or "wgc").lower() != "ocr":
             text, chat_title = _read_via_wgc_with_title(
-                hwnd, n, include_messages=use_ocr,
+                hwnd, n, include_messages=use_ocr, cancel=cancel,
             )
             if text:
                 return text, chat_title
+        if _stopped(cancel):
+            log.info("本次抓取已被上层取消，跳过截屏 OCR 兜底")
+            return "", chat_title
 
         # ============ 兜底：截屏 OCR（4.x 的旧路径 / WGC 不可用时）============
         if use_ocr:
-            text = _read_via_screen_ocr(hwnd, n)
+            text = _read_via_screen_ocr(hwnd, n, cancel=cancel)
             if text:
                 return text, chat_title
             log.info("OCR 未取到上下文（可能聊天区为空、或窗口不在前台被遮挡）")
@@ -162,8 +208,8 @@ def _read_via_uia(n):
     """微信 3.x 专属路径：UIA 消息列表直读。
 
     **回归红线：这是 3.x 的既有路径，行为必须保持不变。**
-    4.x（Qt）不暴露子控件，本函数在 4.x 上会自然返回空字符串，
-    由 read_wechat_recent 转到 4.x 的 WGC 路径。
+    4.x（Qt）只暴露 2~3 个界面标签节点，本函数在 4.x 上按形态过滤后返回空字符串，
+    由 read_wechat_recent 转到 4.x 的 WGC 路径（见 _is_chrome_text）。
 
     两级：
       A) 消息列表直读 —— 3.x 首选，按已知控件名精确匹配（"消息" / "ChatView"）；
@@ -199,16 +245,24 @@ def _read_via_uia(n):
 
     # ---- B：控件树扁平收集（过渡版本兜底）----
     texts, visited = wechat_window.collect_texts(win, max_depth=6, max_nodes=600)
+    try:
+        win_name = win.Name or ""
+    except Exception:
+        win_name = ""
     dedup = []
+    dropped = 0
     for t in texts:
         s = (t or "").strip()
-        if not s:
+        if _is_chrome_text(s, win_name):
+            if s:
+                dropped += 1
             continue
         if dedup and dedup[-1] == s:
             continue
         dedup.append(s)
-    # 至少要有 2 段文本才认定「控件树确实暴露出内容」，
-    # 避免把零星的界面标签当成聊天上下文。
+    # 至少要有 2 段**真实内容**才认定「控件树确实暴露出聊天内容」。
+    # 注意：不能只看段数 —— 微信 4.x 恰好会给出 2~3 段界面标签（窗口标题 + Qt Pane），
+    # 踩线通过就会短路 4.x 的 WGC 路径。所以先按形态过滤界面标签（_is_chrome_text）。
     if len(dedup) >= 2:
         picked = dedup if n is None else (dedup[-n:] if n > 0 else [])
         log.info(
@@ -216,6 +270,11 @@ def _read_via_uia(n):
             f"遍历 {visited} 节点、收集 {len(dedup)} 段文本）"
         )
         return "\n".join(picked)
+    if dropped or visited:
+        log.info(
+            f"UIA 控件树只暴露出 {dropped} 段界面标签、无聊天内容"
+            f"（遍历 {visited} 节点），转由 4.x 采集路径处理"
+        )
     return ""
 
 
@@ -238,7 +297,7 @@ def _read_via_wgc(hwnd, n):
     return context
 
 
-def _read_via_wgc_with_title(hwnd, n, include_messages=True):
+def _read_via_wgc_with_title(hwnd, n, include_messages=True, cancel=None):
     """WGC 同帧读取标题和消息；标题只返回给本机调用方。"""
     try:
         import capture_wgc
@@ -248,7 +307,7 @@ def _read_via_wgc_with_title(hwnd, n, include_messages=True):
     if not capture_wgc.wgc_available():
         return "", None
     msgs, title = capture_wgc.read_recent_with_title(
-        hwnd, n=n, include_messages=include_messages,
+        hwnd, n=n, include_messages=include_messages, cancel=cancel,
     )
     if not msgs:
         return "", title
@@ -257,7 +316,7 @@ def _read_via_wgc_with_title(hwnd, n, include_messages=True):
 
 # ==================== 兜底：截屏 OCR（4.x 旧路径）====================
 
-def _read_via_screen_ocr(hwnd, n):
+def _read_via_screen_ocr(hwnd, n, cancel=None):
     """旧版 4.x 采集：把窗口提到前台后截屏 + OCR。
 
     保留为最后一级兜底（WGC 依赖缺失或抓帧失败时用）。它要求窗口在前台且不被遮挡，
@@ -268,7 +327,7 @@ def _read_via_screen_ocr(hwnd, n):
         if not ocr_reader.ocr_available():
             log.info("OCR 后端不可用，跳过截屏识别")
             return ""
-        ctx = ocr_reader.read_chat_context(hwnd, max_messages=n)
+        ctx = ocr_reader.read_chat_context(hwnd, max_messages=n, cancel=cancel)
         if ctx:
             log.info("读取到聊天上下文（OCR 截屏模式）")
             return ctx

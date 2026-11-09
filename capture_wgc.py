@@ -2,8 +2,9 @@
 """微信 4.x 消息采集：WGC 窗口捕获 + 像素锚点定位 + 说话人分类。
 
 为什么单独一条路径（背景，实测结论）：
-  微信 4.x 用 Qt 重写后**完全不向 UIA 暴露子控件**（主窗口 GetChildren() 恒为 0，
-  发 WM_GETOBJECT 唤醒多轮仍是 0），3.x 的「控件树直读」在 4.x 上必然拿不到东西。
+  微信 4.x 用 Qt 重写后**不向 UIA 暴露聊天内容**：4.2.0.12 唤醒后只给出 2 个
+  界面节点（窗口标题 + Qt 内部 Pane），4.1.0.34 给 3 个，都拿不到消息列表，
+  3.x 的「控件树直读」在 4.x 上必然拿不到东西。
   旧方案（PIL.ImageGrab 抓屏 + 按 1920x1030 基准等比裁剪）有三个硬伤：
     1) 抓的是**屏幕矩形** —— 窗口被遮挡、最小化、不在前台时，截到的是别的东西；
     2) 提前台靠裸调 SetForegroundWindow，后台线程里会被系统**静默拒绝**（返回 0）；
@@ -56,11 +57,18 @@ GRAB_TIMEOUT = 3.0     # 整个抓取（含启动 WGC）的上限秒数
 # ---- 消息区定位参数（移植自 jev-chat-windows 的 chat_area，阈值都是实测值）----
 _SAMPLE = 8            # 算底色的抽样步长：整帧太宽，隔点采样够用且快
 _BG_TOL = 6            # 与底色差异之和 <= 它 → 算「底色像素」
-_COL_RATIO = 0.3       # 一列里底色占比超过它 → 这一列在面板内
+_COL_RATIO = 0.3       # 一列里底色占比超过它 → 这一列在面板内（第一档阈值）
 _ROW_RATIO = 0.9       # 一行里底色占比超过它 → 这一行是纯面板
 _SEP_STD = 4           # 整行标准差 < 它 → 单色行（横向分隔线候选）
 _SEP_ROW = 0.1         # 分隔线所在行的底色占比要低于它
 _MIN_W, _MIN_H = 100, 40
+
+# ---- 定位鲁棒性参数（2026-11-09 「收下右侧空白带」事故后加，见 _longest_span）----
+_COL_RATIO_LADDER = (_COL_RATIO, 0.15, 0.08)  # 阈值逐级放宽：内容越密，面板列的底色占比越低
+_GAP_RATIO = 0.06      # 连续段之间允许的空洞（占帧宽）；小于它就并成一段
+_MIN_W_RATIO = 0.30    # 消息区宽度下限（占帧宽）：真实面板实测占 60%~85%
+_MIN_H_RATIO = 0.25    # 消息区高度下限（占帧高）
+_WIDE_LEFT_RATIO = 0.34  # 4.x 布局：左图标栏 + 会话列表约占帧宽 34%，重试时从这里起裁
 _HEADER_RATIO = 0.085  # 标题栏（含会话名）占客户区高度的比例（1920x1030 实测 86px）
 _HEADER_MIN, _HEADER_MAX = 40, 140
 _TITLE_OCR_MIN = 64   # 小窗口仍需覆盖微信标题文字的完整行高
@@ -132,21 +140,83 @@ def _bg_candidates(full):
     return out
 
 
+def _runs_of(mask):
+    """把布尔序列切成连续 True 段，返回 [(start, end), ...]（end 不含）。"""
+    runs = []
+    start = None
+    for i, flag in enumerate(mask):
+        if flag:
+            if start is None:
+                start = i
+        elif start is not None:
+            runs.append((start, i))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask)))
+    return runs
+
+
+def _longest_span(mask, gap=0):
+    """返回最长的 True 段 [start, end)：相隔不超过 gap 的段先合并再取最长。
+
+    为什么不能取「第一个 / 最后一个 True」（实测踩坑）：
+      微信 4.x 最左边有一条 63px 图标竖栏，底色与聊天面板**完全相同**
+      （237,237,237），中间隔着白色的会话列表。按「第一个超过阈值的列」取左边界
+      会把这条竖栏当成面板起点（x0≈1），右边界再取到窗口最右 —— 面板横跨整个
+      窗口，接着按整行统计「纯面板行」永远到不了 90%，定位失败并退化到比例裁剪，
+      而那套比例是按 1920x1030 标定的，别的尺寸上会把会话列表文字裁进消息区。
+
+    为什么还要允许 gap 合并（2026-11-09 另一台机器实测）：
+      聊天内容密集时（长文本、满屏气泡、大图），中间若干列的底色占比会掉到阈值
+      以下，把面板切成碎片。只取「最长连续段」会掉进右侧那条 165px 的空白边
+      （占帧宽 15%），OCR 自然一个文本框都读不到。会话列表与图标栏之间的空洞
+      通常是 200~300px，远大于 gap，不会被误合并。
+    """
+    if len(mask) == 0:
+        return 0, 0
+    merged = []
+    for start, end in _runs_of(mask):
+        if merged and start - merged[-1][1] <= gap:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    best = (0, 0)
+    for span in merged:
+        if span[1] - span[0] > best[1] - best[0]:
+            best = span
+    return best
+
+
 def _area_with_bg(full, bg):
     """给定面板底色，用像素锚点算出消息区；算不出返回 None。"""
     H, W = full.shape[:2]
     # 底色掩码 → 列/行占比
     isbg = np.abs(full.astype(np.int16) - bg).sum(-1) <= _BG_TOL
     col = isbg[H // 4: H * 3 // 4].mean(0)
-    x0 = int(np.argmax(col > _COL_RATIO))
-    x1 = W - int(np.argmax(col[::-1] > _COL_RATIO))
-    if x1 - x0 < _MIN_W:
+    gap = max(8, int(W * _GAP_RATIO))
+    min_w = max(_MIN_W, int(W * _MIN_W_RATIO))
+    min_h = max(_MIN_H, int(H * _MIN_H_RATIO))
+
+    # 左右边界：阈值逐级放宽，取第一档「宽度够得像面板」的结果。
+    # 会话列表是另一种底色（占比≈0），放宽阈值也不会被并进来。
+    x0 = x1 = 0
+    for ratio in _COL_RATIO_LADDER:
+        start, end = _longest_span(col > ratio, gap)
+        if end - start >= min_w:
+            x0, x1 = int(start), int(end)
+            break
+    if x1 - x0 < 1:
+        log.info("消息区定位失败：逐列底色占比不足（面板被内容切断，或底色候选不对）")
         return None
 
     row = isbg[:, x0:x1].mean(1)
+    if not (row > _ROW_RATIO).any():
+        # 一行都没到 90% → 这块区域根本不是面板（典型的「右侧空白带」误定位）
+        log.info(f"消息区定位失败：候选区域 {x1 - x0}x{H} 里没有纯面板行")
+        return None
     y0 = int(np.argmax(row > _ROW_RATIO))
     y1 = H - int(np.argmax(row[::-1] > _ROW_RATIO))
-    if y1 - y0 < _MIN_H:
+    if y1 - y0 < min_h:
         return None
 
     # 横向分隔线 → 输入框顶 / 消息区顶
@@ -161,7 +231,7 @@ def _area_with_bg(full, bg):
     above = [s for s in seps if y0 + header_h < s < y_in - 50]
     y_top = above[-1] if above else y0 + header_h
 
-    if y_in - y_top < _MIN_H:
+    if y_in - y_top < min_h:
         return None
     return x0, y_top, x1, y_in, bg
 
@@ -171,13 +241,15 @@ def chat_area(full):
 
     全像素锚点，不写死坐标、不做基准等比换算，所以窗口任意缩放、深浅主题都成立：
       · 面板底色 = 候选色里**算出来的消息区最靠上**的那个（见 _bg_candidates）
-      · 左右边界 = 第一 / 最后一根「底色占比 > 30%」的列
-        （左侧会话列表是另一种底色，占比为 0，天然被排除）
+      · 左右边界 = 最长的一段「底色占比 > 阈值」的列，允许中间有 ≤6% 帧宽的空洞
+        （见 _longest_span；左侧会话列表是另一种底色，占比为 0，天然被排除）
       · 消息区上下界 = 「底色占比 > 90%」的纯面板行
       · 横向分隔线 = 整行单色（标准差 < 4）且几乎不含底色；
         输入框顶 = 面板 45% 高度以下的第一根，再往上一根是公告条下沿，
         没有就用标题栏高度兜底
-    认不出（窗口太小 / 布局还没铺好）返回 None，由调用方走兜底裁剪。
+    定位结果还要过形状校验（宽度 ≥ 帧宽 30%、高度 ≥ 帧高 25%）：真实面板实测占
+    60%~85%，过不了就是拿错了区域（例如聊天内容把面板切断后剩下的右侧空白带）。
+    认不出（窗口太小 / 布局还没铺好 / 形状不合理）返回 None，由调用方走兜底裁剪。
     """
     H, W = full.shape[:2]
     if H < 120 or W < 200:
@@ -255,6 +327,58 @@ def fallback_area(shape):
     if x1 - x0 < _MIN_W or y_in - y_top < _MIN_H:
         return None
     return x0, y_top, x1, y_in, None
+
+
+def widen_area(shape, area):
+    """消息区被判为「偏窄」时的第二选择：按 4.x 布局估算一块更宽的区域。
+
+    只在区间宽度 < 帧宽 55% 时启用（真实面板实测占 60%~85%）。走到这里通常意味着
+    拿到的是一条空白带（例如聊天内容把面板切断后剩下的右侧 165px），此时把左边界
+    放宽到「图标栏 + 会话列表」之后（约 34% 帧宽）再试一次，比直接放弃有用：
+    会话列表里的联系人名是灰字小字，`parse_messages` 按气泡像素分类时会丢掉，
+    不会污染上下文。返回 (x0, y_top, x1, y_in, 底色) 或 None。
+    """
+    if not area:
+        return None
+    H, W = shape[:2]
+    x0, y_top, x1, y_in, bg = area
+    if x1 - x0 >= W * 0.55:
+        return None
+    nx0 = max(0, int(W * _WIDE_LEFT_RATIO))
+    nx1 = min(W, max(x1, int(W * 0.99)))
+    if nx1 - nx0 < max(_MIN_W, int(W * _MIN_W_RATIO)):
+        return None
+    if nx0 >= x1 or nx1 <= x0:
+        return None
+    return nx0, y_top, nx1, y_in, bg
+
+
+_LAST_DUMP = 0.0
+
+
+def dump_debug_frame(full, tag):
+    """把「定位失败 / 识别不到消息」的现场帧存一份，供事后复盘（限频 10s）。
+
+    没有现场帧时，只能靠日志里的坐标猜画面内容（2026-11-09 那次 165x677 的空白带
+    就是猜出来的）。存一张图，下次直接看就行。失败不影响主流程。
+    """
+    global _LAST_DUMP
+    if full is None:
+        return
+    now = time.time()
+    if now - _LAST_DUMP < 10:
+        return
+    _LAST_DUMP = now
+    try:
+        import paths
+        from PIL import Image
+
+        out = paths.data_dir() / "debug_frame_last.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(full).save(out)
+        log.info(f"已保存可疑帧供排查（{tag}）: {out}")
+    except Exception as e:
+        log.warning(f"保存可疑帧失败（不影响主流程）: {type(e).__name__}: {e}")
 
 
 # ==================== 说话人分类 ====================
@@ -483,18 +607,59 @@ def grab_frame(hwnd, timeout=GRAB_TIMEOUT):
     return full, area
 
 
+def _stopped(cancel):
+    """上层已放弃本次抓取（超时）→ True。cancel 为 None 时永远 False。"""
+    try:
+        return bool(cancel is not None and cancel.is_set())
+    except Exception:
+        return False
+
+
+def _recognize_crop(crop, pane_bg, ocr_reader):
+    """对一块消息区图像做 OCR + 说话人分类，返回 (msgs, boxes, pass_info)。
+
+    RapidOCR 出框但形不成聊天消息时回退 WinRT（两个引擎的框坐标口径一致）。
+    识别不到时返回空列表，但**保留** boxes/pass_info —— 排查「上下文为空」时，
+    「识别到几个框、走的哪个引擎」是唯一线索。
+    """
+    try:
+        from PIL import Image
+        boxes, pass_info = ocr_reader.recognize_boxes_scaled(Image.fromarray(crop))
+    except Exception as e:
+        log.warning(f"消息区 OCR 失败: {type(e).__name__}: {e}")
+        return [], [], "OCR 异常"
+    if not boxes:
+        log.info("WGC 采集：消息区没识别到文字")
+        return [], [], pass_info
+    msgs = parse_messages(crop, boxes, pane_bg)
+    if not msgs and pass_info.startswith("RapidOCR ") and not pass_info.startswith("RapidOCR 0,"):
+        log.info("WGC 采集：RapidOCR 文本框未形成聊天消息，回退到 WinRT OCR")
+        boxes, fallback_info = ocr_reader.recognize_boxes_winrt_scaled(crop)
+        pass_info = f"RapidOCR 无消息；{fallback_info}"
+        if boxes:
+            msgs = parse_messages(crop, boxes, pane_bg)
+    return msgs, boxes, pass_info
+
+
 def read_recent_with_title(hwnd, n=None, timeout=GRAB_TIMEOUT,
-                           include_messages=True):
+                           include_messages=True, cancel=None):
     """同一张 WGC 帧中识别聊天标题与可见消息。
 
     返回 ``(messages, title_or_none)``。标题/聊天图像仅在内存处理，标题文字
     不写日志。include_messages=False 时仍可单独读取标题。
+
+    cancel: 可选的 threading.Event。被置位说明上层已经放弃本次抓取（超时报错），
+    这里在 OCR 前后各查一次并尽快返回 —— 否则后台线程会继续跑十几秒 OCR，
+    把 CPU 抢给下一次热键（实测两台机器都出现过「越点越慢」）。
     """
     if not hwnd:
         return [], None
 
     full, area = grab_frame(hwnd, timeout=timeout)
     if full is None or area is None:
+        dump_debug_frame(full, "未定位到消息区")
+        return [], None
+    if _stopped(cancel):
         return [], None
 
     header_boxes, _header_info = recognize_chat_header(full, area)
@@ -513,25 +678,28 @@ def read_recent_with_title(hwnd, n=None, timeout=GRAB_TIMEOUT,
     log.info(f"WGC 采集：整帧 {full.shape[1]}x{full.shape[0]} → 消息区 "
              f"({x0},{y_top})-({x1},{y_in}) 尺寸 {x1 - x0}x{y_in - y_top}")
 
-    try:
-        from PIL import Image
-        boxes, pass_info = ocr_reader.recognize_boxes_scaled(Image.fromarray(crop))
-    except Exception as e:
-        log.warning(f"消息区 OCR 失败: {type(e).__name__}: {e}")
-        return [], title
-    if not boxes:
-        log.info("WGC 采集：消息区没识别到文字")
+    msgs, boxes, pass_info = _recognize_crop(crop, pane_bg, ocr_reader)
+    if _stopped(cancel):
         return [], title
 
-    msgs = parse_messages(crop, boxes, pane_bg)
-    if not msgs and pass_info.startswith("RapidOCR ") and not pass_info.startswith("RapidOCR 0,"):
-        log.info("WGC 采集：RapidOCR 文本框未形成聊天消息，回退到 WinRT OCR")
-        boxes, fallback_info = ocr_reader.recognize_boxes_winrt_scaled(crop)
-        pass_info = f"RapidOCR 无消息；{fallback_info}"
-        if boxes:
-            msgs = parse_messages(crop, boxes, pane_bg)
+    # 一条消息都没识别出来、且这块区域明显偏窄 → 换一块更宽的区域再试一次。
+    # （定位拿成右侧空白带时，窄区域里永远只有 0~1 个框，重试比直接放弃有用。）
+    if not msgs:
+        wide = widen_area(full.shape, area)
+        if wide is not None:
+            wx0, wy_top, wx1, wy_in, _wbg = wide
+            log.info(
+                f"WGC 采集：消息区偏窄（占帧宽 {(x1 - x0) * 100.0 / full.shape[1]:.0f}%），"
+                f"改用宽区域 ({wx0},{wy_top})-({wx1},{wy_in}) 重试一次"
+            )
+            wcrop = full[wy_top:wy_in, wx0:wx1]
+            if wcrop.size:
+                msgs, wboxes, wpass = _recognize_crop(wcrop, pane_bg, ocr_reader)
+                if msgs:
+                    crop, boxes, pass_info = wcrop, wboxes, wpass
     if not msgs:
         log.info(f"WGC 采集：识别到 {len(boxes)} 个文本框，但没有可用的消息")
+        dump_debug_frame(full, f"消息区 {x1 - x0}x{y_in - y_top} 无可用消息")
         return [], title
     if n is None:
         picked = msgs
@@ -547,9 +715,11 @@ def read_recent_with_title(hwnd, n=None, timeout=GRAB_TIMEOUT,
     return picked, title
 
 
-def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT):
+def read_recent(hwnd, n=None, timeout=GRAB_TIMEOUT, cancel=None):
     """兼容旧调用方：返回 WGC 识别到的可见消息列表。"""
-    messages, _title = read_recent_with_title(hwnd, n=n, timeout=timeout)
+    messages, _title = read_recent_with_title(
+        hwnd, n=n, timeout=timeout, cancel=cancel,
+    )
     return messages
 
 
