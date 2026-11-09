@@ -94,8 +94,10 @@ DEFAULTS = {
     "tray_size": 220,            # 动图窗口边长（像素）
     "tray_pos": None,            # 动图上次拖动后的位置 [x, y]；None=默认右下角（越界会自动复位）
     "system_prompt": BUILTIN_PROMPTS[0]["content"],   # 兼容旧逻辑/回落值
+    # 旧的「承接对方话术版」会诱导模型先复述对方的问题，生成「您提到…」
+    # 这类不能直接发送的旁白，因此换成不会诱导复述的风格描述。
     "extra_instruction": (
-        "按场景给出：1个稳妥推荐版 + 其余风格差异化（简短版 / 正式版 / 承接对方话术版）。"
+        "按场景给出：1个稳妥推荐版 + 其余风格差异化（简短确认 / 稍正式说明）。"
     ),
     # 提示词列表与当前生效项（首次打开配置页时由 ensure_prompts_seeded 写入）
     "prompts": [dict(p) for p in BUILTIN_PROMPTS],

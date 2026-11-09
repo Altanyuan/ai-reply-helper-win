@@ -61,6 +61,50 @@ class ContactRuleResolutionTests(unittest.TestCase):
             ("妈妈2", (90, 10, 140, 30)),
         ], 900))
 
+    def test_title_symbol_boxes_are_ignored(self):
+        """返回箭头之类的纯符号框不能把「唯一候选」挤成两个。"""
+        from capture_wgc import select_chat_title
+
+        self.assertEqual(select_chat_title([
+            ("‹", (6, 12, 18, 32)),
+            ("王总", (30, 10, 90, 34)),
+        ], 900), "王总")
+        self.assertIsNone(select_chat_title([("‹", (6, 12, 18, 32))], 900))
+
+    def test_split_title_boxes_are_merged(self):
+        """长群名被 OCR 拆成相邻两段时要合并，而不是直接判定为无法识别。"""
+        from capture_wgc import select_chat_title
+
+        self.assertEqual(select_chat_title([
+            ("华图王七七", (30, 10, 150, 34)),
+            ("（你必上岸！）", (152, 12, 260, 32)),
+        ], 900), "华图王七七（你必上岸！）")
+        # 上下两行（如昵称 + 副标题）不能合并，仍按多候选拒绝
+        self.assertIsNone(select_chat_title([
+            ("妈妈", (30, 10, 150, 34)),
+            ("对方正在输入", (30, 40, 200, 62)),
+        ], 900))
+
+    def test_title_right_side_buttons_are_excluded(self):
+        """左 25% 之外的工具按钮文字不参与候选。"""
+        from capture_wgc import select_chat_title
+
+        self.assertEqual(select_chat_title([
+            ("王总", (30, 10, 90, 34)),
+            ("聊天信息", (700, 10, 780, 34)),
+        ], 900), "王总")
+
+    def test_small_icon_box_is_not_appended_to_title(self):
+        """真机形态：左侧图标被 OCR 成矮小字符，不能粘到名字末尾。"""
+        from capture_wgc import select_chat_title
+
+        self.assertEqual(select_chat_title([
+            ("【武农商-金网络】系统对接群(27)", (125, 36, 430, 66)),
+            ("卡", (58, 44, 72, 58)),
+        ], 503), "【武农商-金网络】系统对接群(27)")
+        # 正常字高的单字昵称仍然保留
+        self.assertEqual(select_chat_title([("卡", (30, 36, 60, 66))], 503), "卡")
+
     def test_per_run_prompt_does_not_change_global_config(self):
         self.assertIsNotNone(config_for_prompt, "per-run config helper is not implemented")
         global_cfg = {"active_prompt_id": "global", "contact_rules": []}

@@ -129,6 +129,61 @@ def test_cancel_unset_still_runs_normal_ladder():
     assert calls == {"uia": 1, "wgc": 1, "ocr": 0}, calls
 
 
+# ==================== 界面标签不得冒充聊天上下文 ====================
+# 线上 bug 回归：微信 4.x（Qt）根窗口只向 UIA 暴露 2~3 个节点 —— 窗口标题 "微信"
+# 加上 "Weixin" / "MMUIRenderSubWindowHW" 这类 Pane。旧逻辑只要「>= 2 段文本」
+# 就当成上下文返回，于是 UIA 这一级短路了真正能产出说话人标签的 WGC/OCR 路径，
+# 上层判定「读到了文字但无法确认谁说的」，空输入框时直接弹框拒绝草拟。
+
+
+class _FakeWin:
+    """够用的微信窗口替身：只需要 Name 与 SetActive。"""
+
+    def __init__(self, name="微信"):
+        self.Name = name
+
+    def SetActive(self):
+        return True
+
+
+def _read_uia_with(flat_texts):
+    with patch.object(capturer.wechat_window, "find_wechat_control",
+                      return_value=_FakeWin()), \
+            patch.object(capturer.wechat_window, "find_message_list",
+                         return_value=None), \
+            patch.object(capturer.wechat_window, "collect_texts",
+                         return_value=(flat_texts, 3)):
+        return capturer._read_via_uia(None)
+
+
+def test_qt_chrome_only_is_not_context():
+    """4.x 的 2~3 段界面标签必须被剔除，返回空串以转交 4.x 采集路径。"""
+    assert _read_uia_with(["微信", "Weixin", "MMUIRenderSubWindowHW"]) == ""
+    assert _read_uia_with(["微信", "Weixin"]) == ""
+
+
+def test_real_flat_messages_are_still_kept():
+    """回归红线：3.x 扁平兜底的真实消息必须原样返回。"""
+    msgs = ["你好在吗", "明天几点开会", "合同我发你邮箱了"]
+    assert _read_uia_with(msgs) == "\n".join(msgs)
+
+
+def test_chrome_filter_does_not_eat_real_english_chat():
+    """过滤规则不能误伤正常英文聊天。"""
+    assert _read_uia_with(["hello", "ok", "see you tomorrow"]) == \
+        "hello\nok\nsee you tomorrow"
+
+
+def test_is_chrome_text_rules():
+    assert capturer._is_chrome_text("微信", "微信")
+    assert capturer._is_chrome_text("Weixin")
+    assert capturer._is_chrome_text("MMUIRenderSubWindowHW")
+    assert capturer._is_chrome_text("   ")
+    assert not capturer._is_chrome_text("你好，明天几点开会？")
+    assert not capturer._is_chrome_text("ok")
+    assert not capturer._is_chrome_text("hello")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

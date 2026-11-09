@@ -187,6 +187,15 @@ def _longest_span(mask, gap=0):
     return best
 
 
+def _longest_run(mask):
+    """v2.0.4 的旧名字，等价于「不做空洞合并」的 _longest_span。
+
+    保留它是为了让交接版带来的回归用例（tests/test_capture_area.py 里按旧名写的
+    三条）继续可用；新代码请用 _longest_span，它多了 gap 合并。
+    """
+    return _longest_span(mask, gap=0)
+
+
 def _area_with_bg(full, bg):
     """给定面板底色，用像素锚点算出消息区；算不出返回 None。"""
     H, W = full.shape[:2]
@@ -301,17 +310,96 @@ def recognize_chat_header(full, area):
         return [], f"识别异常：{type(e).__name__}"
 
 
+# ---- 标题识别：噪声符号与同一行合并阈值 ----
+# 这些字符单独成框时是返回箭头 / 分隔线 / 窗口按钮字形，不是聊天名称的一部分。
+_TITLE_NOISE_CHARS = set(
+    "‹›«»<>《》-—_~|/\\·.,;:!?'\"`^*#+=()（）[]【】{}…⋯×✕✖⌄∨˅"
+)
+# 同一行相邻两框的间隙（像素）不超过它就视为同一个名字被 OCR 拆开
+_TITLE_MERGE_GAP = 8
+
+
+def _is_title_noise(text):
+    """整段都是符号/空白的 OCR 框不是聊天名。"""
+    s = (text or "").strip()
+    if not s:
+        return True
+    return all(ch in _TITLE_NOISE_CHARS or ch.isspace() for ch in s)
+
+
+def _same_text_row(a, b, min_overlap=0.5):
+    """两个框是否落在同一行：纵向重叠超过较矮那个框高度的 50%。"""
+    overlap = min(a[3], b[3]) - max(a[1], b[1])
+    if overlap <= 0:
+        return False
+    shorter = min(a[3] - a[1], b[3] - b[1])
+    return shorter > 0 and overlap >= min_overlap * shorter
+
+
 def select_chat_title(boxes, header_width):
-    """从标题栏 OCR 框中取左侧聊天名称，排除右侧工具按钮文字。"""
+    """从标题栏 OCR 框中取左侧聊天名称，排除右侧工具按钮文字。
+
+    标题栏左侧只有聊天名本身（右侧是工具按钮），因此候选限定在左 25%。
+
+    三步处理，都是为了让「未识别」和「认错」同时变少：
+      1) **剔符号框**：返回箭头 ‹、分隔线 | 之类的纯符号框以前会让候选变成
+         2 个，旧逻辑直接判「无法确定」，昵称就丢了。
+      2) **同行向右合并**：长群名常被 OCR 拆成相邻两段
+         （「华图王七七」+「（你必上岸！）」），间隙很小时视为同一个名字。
+         只允许向右拼接 —— 标题栏左边缘的图标字如果被并到末尾，
+         会得到一个「名字+乱码」的假标题（实测踩过）。
+      3) **剔矮小框**：图标、装饰字被 OCR 出来时通常只有正常文字一半高
+         （实测：真标题高 30px、左侧图标字高 14px），按「不到最高框 60%」
+         剔除（与消息气泡的 kind_small 同一套判据）。
+
+    三步之后仍有多个候选，说明标题栏里确实不止一个名字 —— 返回 None
+    （界面显示「未识别」、回落全局默认提示词），不猜，免得把提示词套错人。
+    """
     left_limit = max(100, int(header_width * 0.25))
-    candidates = [
-        (str(text).strip(), rect)
+    cands = [
+        (str(text).strip(), tuple(rect))
         for text, rect in (boxes or [])
-        if str(text).strip() and rect[0] <= left_limit
+        if not _is_title_noise(text) and rect[2] > rect[0] and rect[3] > rect[1]
+        and rect[0] <= left_limit
     ]
-    if len(candidates) != 1:
+    if not cands:
         return None
-    return candidates[0][0]
+
+    # 1) 按纵向重叠分行
+    rows = []
+    for item in sorted(cands, key=lambda c: (c[1][1], c[1][0])):
+        for row in rows:
+            if _same_text_row(row[0][1], item[1]):
+                row.append(item)
+                break
+        else:
+            rows.append([item])
+
+    # 2) 行内从左到右拼接；间隙过大或方向相反就断开成新片段
+    clusters = []
+    for row in rows:
+        row.sort(key=lambda c: c[1][0])
+        text, rect = row[0]
+        for next_text, next_rect in row[1:]:
+            gap = next_rect[0] - rect[2]
+            if -2 <= gap <= _TITLE_MERGE_GAP:
+                text = f"{text}{next_text}"
+                rect = (rect[0], min(rect[1], next_rect[1]),
+                        max(rect[2], next_rect[2]), max(rect[3], next_rect[3]))
+            else:
+                clusters.append((text, rect))
+                text, rect = next_text, next_rect
+        clusters.append((text, rect))
+
+    # 3) 矮小框（图标/装饰字）不是名字
+    tallest = max(rect[3] - rect[1] for _text, rect in clusters)
+    keep = [(text, rect) for text, rect in clusters
+            if (rect[3] - rect[1]) >= 0.6 * tallest]
+    if len(keep) != 1:
+        return None
+    # OCR 对长名字会插入多余空格，去掉后再作为联系人的匹配键
+    title = "".join(keep[0][0].split())
+    return title or None
 
 
 def fallback_area(shape):

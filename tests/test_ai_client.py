@@ -59,6 +59,12 @@ def test_parse_versions_empty():
     assert ai_client._parse_versions("", 3) == []
 
 
+def test_parse_versions_truncates_to_configured_count():
+    """模型经常多给（要 3 条返 4 条），界面不能冒出比设置更多的卡片。"""
+    out = ai_client._parse_versions('["a", "b", "c", "d"]', 3)
+    assert out == ["a", "b", "c"]
+
+
 # ---------- 网络层：连接类错误要重试，HTTP 错误不重试 ----------
 
 def _cfg_ready():

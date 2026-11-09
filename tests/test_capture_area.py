@@ -120,6 +120,48 @@ def test_chrome_text_filter():
     assert _is_chrome_text("对方：文件序号是多少", "微信") is False
 
 
+# ==================== 交接版 v2.0.4 带来的三条（同色图标栏回归）====================
+# 线上 bug 回归：微信 4.x 最左边有一条图标竖栏，底色与聊天面板完全相同
+# （237,237,237），中间隔着白色的会话列表。旧实现取「第一个超过阈值的列」当
+# 左边界，于是 x0≈1、x1≈窗口最右，「面板」横跨整个窗口 → 按整行统计纯面板行
+# 永远达不到 90% → 上下界算不出来 → chat_area 返回 None，调用方退化到按
+# 1920x1030 标定的写死比例裁剪，把会话列表里的联系人名和消息预览一起裁进消息区
+# （实测现象：上下文里凭空多出「网..星期四」这种会话列表文字）。
+
+
+def test_longest_run_picks_longest_segment():
+    assert capture_wgc._longest_run([False, True, True, False, True, True, True, False]) == (4, 7)
+    assert capture_wgc._longest_run([True, True]) == (0, 2)
+    assert capture_wgc._longest_run([False, False]) == (0, 0)
+    assert capture_wgc._longest_run([False, True, False, True, True]) == (3, 5)
+
+
+def _synth_real_frame(w=1225, h=888, rail=63, list_right=303):
+    """还原真机布局：图标栏与聊天面板同色，中间会话列表是白色。"""
+    frame = np.full((h, w, 3), 237, dtype=np.uint8)
+    frame[:, rail:list_right] = 255          # 会话列表（白底）
+    frame[100:112, 80:290] = 30              # 会话列表里的两行文字
+    frame[180:192, 80:290] = 30
+    frame[90:130, 380:470] = 255             # 聊天面板里的白色气泡
+    frame[60:64, :] = 220                    # 标题栏下沿
+    frame[660:664, :] = 220                  # 输入框上沿
+    return frame
+
+
+def test_chat_area_skips_same_colored_icon_rail():
+    area = capture_wgc.chat_area(_synth_real_frame())
+    assert area is not None, "定位失败会退化到写死比例，把会话列表裁进消息区"
+    x0, y_top, x1, y_in, bg = area
+    assert x0 >= 300, f"左边界 {x0} 落进了图标栏/会话列表"
+    assert x1 > 1100, f"右边界 {x1} 太靠左"
+    assert y_in - y_top > 200, (y_top, y_in)
+    assert tuple(int(v) for v in bg) == (237, 237, 237)
+
+
+def test_chat_area_returns_none_on_tiny_frame():
+    assert capture_wgc.chat_area(np.full((80, 150, 3), 237, dtype=np.uint8)) is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
