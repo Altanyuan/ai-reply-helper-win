@@ -67,10 +67,41 @@ for _pkg in ("windows_capture",):
     hiddenimports += collect_submodules(_pkg)
     binaries += collect_dynamic_libs(_pkg)
 
-# 明确排除，避免把测试/调试依赖打进包
+# 明确排除，避免把测试/调试依赖打进包。
+#
+# 2026-11-09 体积瘦身（第一档）：解析 PKG-00.toc 实测载荷 327.5 MiB → 原 exe 167 MiB；
+# 按下面清单 + 过滤 cv2 的 ffmpeg dll 之后，exe 实测 167 MiB → 114.3 MiB
+# （-52.8 MiB / -31.6%）。每一项依据见行内注释，且都可以单独注释掉回滚。
+# 保留项已核对：uiautomation / comtypes / shapely / rapidocr(+两个 onnx 模型) /
+# onnxruntime / cv2.pyd / tcl+tk 均仍在包里。
 excludes = [
     "pytest",
     "tkinter.test",
+    # scipy 只被 shapely/conftest.py（测试夹具）引用，项目零引用；
+    # 实测走完 RapidOCR + UIA 全流程后 sys.modules 里没有 scipy。占 67 MiB。
+    "scipy",
+    "scipy.libs",
+    # lxml 来自 markitdown/bs4 那条线，本项目零引用；bs4 自身也会回退 html.parser。
+    "lxml",
+    # cryptography 只在 requests/help.py 打印版本号时用到（try/except 包着），
+    # 排除后 requests 走 stdlib ssl，TLS 与代理照常。占 7.9 MiB（另加 OpenSSL 5.8）。
+    "cryptography",
+    # pywin32 只被 comtypes 的 test 文件引用；实测 UIA 初始化后 pywintypes 仍未加载。
+    "pythonwin",
+    "win32api",
+    "win32con",
+    "win32gui",
+    "win32com",
+    "win32com.client",
+    "pywintypes",
+    # 只解码 webp/png/ico，不处理 AVIF（该插件自身 7.5 MiB）。
+    "PIL.AvifImagePlugin",
+    # 环境里装了但本项目不用的重型库，避免被静态分析顺藤摸瓜带进来。
+    "matplotlib",
+    "pandas",
+    "IPython",
+    "bs4",
+    "markitdown",
 ]
 
 a = Analysis(
@@ -90,6 +121,16 @@ a = Analysis(
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=None)
+
+# cv2 自带的 ffmpeg 只服务于 cv2.VideoCapture / VideoWriter（视频编解码）。
+# 本项目只用 cv2 做图像运算（RapidOCR 的预处理），所以这一个 dll（26.7 MiB 载荷）
+# 纯属陪跑。cv2 是在真正用到 videoio 时才去加载它，import cv2 不受影响。
+#
+# 已验证（把 site-packages 里该 dll 改名后跑）：import cv2 成功，cvtColor /
+# GaussianBlur / Sobel / floodFill / imencode 全部正常 → 属于纯运行时按需加载。
+# 注意：过滤必须作用在 a.binaries 上（而不是 Analysis 的 binaries 入参），
+# 否则 hook 后加的这份 dll 会漏网。
+a.binaries = [b for b in a.binaries if "opencv_videoio_ffmpeg" not in b[0]]
 
 exe = EXE(
     pyz,
