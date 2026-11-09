@@ -36,8 +36,18 @@ if errorlevel 1 (
 )
 
 echo [2/3] Building single-file exe with PyInstaller...
+rem 先关掉正在运行的 dist 实例：单文件 exe 运行时会锁住自身，
+rem rmdir 会静默失败，随后 PyInstaller 在 os.remove(dist\xxx.exe) 处报
+rem   PermissionError: [WinError 5] 拒绝访问: ...\dist\会聊.exe
+rem （v2.0.5 打包踩到过；早期版本表现为 [safe-delete] trash 操作失败。）
+rem 用 PowerShell 按路径匹配，避免在纯 ASCII 批处理里写中文文件名。
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Process | Where-Object { $_.Path -like ($PWD.Path + '\dist\*') } | ForEach-Object { Write-Host ('      stopping ' + $_.ProcessName + ' (PID ' + $_.Id + ')'); Stop-Process -Id $_.Id -Force }" 2>nul
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
+if exist dist (
+    echo [ERROR] dist is still locked. Close the running exe from dist and retry.
+    goto :fail
+)
 python -m PyInstaller build.spec --noconfirm --clean
 if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
