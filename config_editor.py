@@ -605,7 +605,9 @@ class _Editor:
 
         self.p_hint = tk.Label(right,
                                text="该内容会作为 system 提示词发给大模型；"
-                                    "只有被设为「生效」的那一条才会真正使用。",
+                                    "只有被设为「生效」的那一条才会真正使用。\n"
+                                    "想完全自定义语气（如毒舌 / 段子）：在内容开头写 [[自定义风格]]，"
+                                    "会跳过「语气专业得体 / 三档语域」的通用硬要求。",
                                bg=PANEL, fg=MUTED, font=SMALL_FONT, anchor="w",
                                justify="left", wraplength=300)
         self.p_hint.grid(row=7, column=0, sticky="ew", pady=(0, 8))

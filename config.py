@@ -69,6 +69,74 @@ BUILTIN_PROMPTS = [
             "语气专业得体；可按不同风格给多个版本。"
         ),
     },
+    {
+        # 带 [[自定义风格]] 标记：ai_client 会跳过「语气专业得体 / 三档语域」那套
+        # 通用硬要求，否则毒舌会被压平成「请说明具体是哪个文件」
+        "id": "builtin_sarcastic",
+        "name": "毒舌回怼",
+        "builtin": True,
+        "desc": "怼回去但不失礼，三档辣度",
+        "content": """[[自定义风格]]
+你是一名嘴很毒、但业务很靠谱的老同事，专门帮用户在微信里怼回去。
+用户给的草稿往往是“憋着气想说的话”，你的任务不是劝他忍，而是把它打磨成
+发得出去、又有杀伤力的回复。
+
+三条铁律：
+1. 只毒事，不毒人：可以嘲「这个需求」「这个时间点」「这种做法」，
+   但不评价对方的人品、外貌、家人、性别、地域、学历，不带脏话和侮辱性词汇；
+2. 事实一个字都不加：不编造对方的原话，不虚构时间、金额、责任归属。
+   毒舌靠措辞和逻辑，不靠编料；
+3. 每条都能原样发出去：不加标题、不加旁白，也不加「开个玩笑」「别介意」这种自拆台的尾巴。
+
+三个版本按辣度递进，一眼能看出区别。
+每一档都必须带态度——最平的那版也不能是干巴巴的陈述句：
+① 阴阳怪气：不直接骂，用过度客套、明知故问把人噎住
+   （例：「您这需求写得真精简，我猜都猜不出来呢」）；
+② 直接点破：一句话戳出对方哪里没说清、哪里不合理，句子短、刀口准，
+   常用反问收尾（例：「就俩字『文件』，你让我查哪门子？」）；
+③ 火力全开：连环反问、排比、夸张，情绪拉满但仍停在「能发出去」的边界内，
+   像当众吐槽，不像骂街。
+
+表达偏好：多用短句和反问，少用「我觉得」「可能」这类软化词；
+讽刺靠事实对比和逻辑，不靠形容词堆砌。
+草稿很短（只有一句质问）时，更要靠反问、省略和态度把三个版本拉开差距，
+不要因为信息少就退回中性语气。
+
+仍然只返回 JSON 字符串数组，不要对象、不要解释。""",
+    },
+    {
+        # 同上：讨好类风格也必须声明 [[自定义风格]]，否则会被通用语气要求拉回中性
+        "id": "builtin_flatter",
+        "name": "舔狗回话",
+        "builtin": True,
+        "desc": "极尽客气、主动示好，三档姿态递进",
+        "content": """[[自定义风格]]
+你是一名把「让对方舒服」做到极致的沟通助手。用户要发的话往往太硬、太冷淡，
+你的任务是把它改写成极度客气、主动示好、姿态放得很低的版本——像对领导、
+对客户说话，宁可自己多担一点，也不让对方有一点不快。
+
+三条铁律：
+1. 事实一个字都不加：不编造对方说过的话，不虚构时间、金额、责任归属；
+   讨好靠态度和措辞，不靠编料；
+2. 每条都能原样发出去：不加标题、不加旁白，也不加「（笑）」「（鞠躬）」这类动作描写；
+3. 姿态低但不卑贱：可以道歉、可以揽责、可以夸，但不自辱、不谄媚到肉麻，
+   不出现「求求您」「给您跪了」这种出戏的句子——目标是让对方舒服，不是让自己难堪。
+
+三个版本按姿态递进，一眼能看出区别：
+① 客气版：先给对方留余地，把话说软
+   （例：「不好意思打扰您，方便的时候看一下就行」）；
+② 主动版：主动多走一步，替对方省事
+   （例：「相关材料我已经整理好了，您有空扫一眼即可，剩下的我来跟进」）；
+③ 极致版：把对方捧高 + 自我放低，情绪拉满但仍能发
+   （例：「有您这句话我就踏实了，这点小事本该我提前想到，是我疏忽，您千万别费心」）。
+三档都必须保留草稿里的全部信息，不许为了客气把要办的事说没了。
+
+表达偏好：多用「您」「麻烦您」「辛苦您」，少用命令句和「必须」「马上」；
+把「你要…」换成「您看这样行不行…」。
+若草稿本身带催促或指责意味，保留目的，但把锋芒全部收掉。
+
+仍然只返回 JSON 字符串数组，不要对象、不要解释。""",
+    },
 ]
 
 DEFAULTS = {
@@ -225,28 +293,86 @@ def update_config(partial):
 # ---------- 提示词管理 ----------
 
 def ensure_prompts_seeded():
-    """首次迁移：若 config.json 没有 prompts，写入内置 5 个。
+    """写入 / 补齐内置提示词。
 
-    若用户此前自定义过 system_prompt（且与任一内置不同），则把它作为
-    “我的提示词”自定义项保留并设为生效，避免升级后丢失自定义内容。
-    幂等：已存在 prompts 时直接返回。
+    两种情况：
+    1. 首次（config 里没有 prompts）：写入全部内置项；若用户此前自定义过
+       system_prompt，把它作为「我的提示词」保留并设为生效，升级不丢内容。
+    2. 已有 prompts：只补 BUILTIN_PROMPTS 里缺的 id。若存在**同名的自定义项**
+       （老版本里手工建的「毒舌回怼」/「舔狗回话」），原地升级成内置项：
+       换 id、builtin=True、保留用户改过的内容，并同步 active_prompt_id 与
+       contact_rules 里的引用——否则列表里会同时出现两条同名提示词。
+
+    幂等：一切就绪时不写文件（这个函数每次读配置都会被调用）。
     """
     data = _read_json()
-    if "prompts" in data and isinstance(data["prompts"], list) and data["prompts"]:
+    prompts = data.get("prompts")
+    if not isinstance(prompts, list) or not prompts:
+        prompts = [dict(p) for p in BUILTIN_PROMPTS]
+        active_id = prompts[0]["id"]
+        sp = (data.get("system_prompt") or "").strip()
+        if sp and not any(sp == (p.get("content") or "").strip() for p in prompts):
+            prompts.insert(0, {
+                "id": "migrated",
+                "name": "我的提示词",
+                "builtin": False,
+                "desc": "从旧配置迁移",
+                "content": sp,
+            })
+            active_id = "migrated"
+        update_config({"prompts": prompts, "active_prompt_id": active_id})
         return
-    prompts = [dict(p) for p in BUILTIN_PROMPTS]
-    active_id = prompts[0]["id"]
-    sp = (data.get("system_prompt") or "").strip()
-    if sp and not any(sp == (p.get("content") or "").strip() for p in prompts):
-        prompts.insert(0, {
-            "id": "migrated",
-            "name": "我的提示词",
-            "builtin": False,
-            "desc": "从旧配置迁移",
-            "content": sp,
-        })
-        active_id = "migrated"
-    update_config({"prompts": prompts, "active_prompt_id": active_id})
+
+    by_id = {p.get("id") for p in prompts if isinstance(p, dict)}
+    changed = False
+    id_map = {}
+    for bp in BUILTIN_PROMPTS:
+        if bp["id"] in by_id:
+            continue
+        same = None
+        for p in prompts:
+            if not isinstance(p, dict) or p.get("builtin"):
+                continue
+            if (p.get("name") or "").strip() == bp["name"]:
+                same = p
+                break
+        if same is not None:
+            old_id = same.get("id")
+            same["id"] = bp["id"]
+            same["builtin"] = True
+            if not (same.get("desc") or "").strip():
+                same["desc"] = bp["desc"]
+            if not (same.get("content") or "").strip():
+                same["content"] = bp["content"]
+            if old_id and old_id != bp["id"]:
+                id_map[old_id] = bp["id"]
+        else:
+            prompts.append(dict(bp))
+        by_id.add(bp["id"])
+        changed = True
+
+    if not changed:
+        return
+
+    # 列表顺序：内置按 BUILTIN_PROMPTS 的顺序在前，自定义项保持原有相对顺序在后
+    order = {p["id"]: i for i, p in enumerate(BUILTIN_PROMPTS)}
+    prompts.sort(
+        key=lambda p: (0, order.get(p.get("id"), len(order))) if p.get("builtin") else (1, 0)
+    )
+
+    patch = {"prompts": prompts}
+    if id_map:
+        aid = data.get("active_prompt_id")
+        if aid in id_map:
+            patch["active_prompt_id"] = id_map[aid]
+        rules = data.get("contact_rules")
+        if isinstance(rules, list):
+            patch["contact_rules"] = [
+                dict(r, prompt_id=id_map[r["prompt_id"]])
+                if isinstance(r, dict) and r.get("prompt_id") in id_map else r
+                for r in rules
+            ]
+    update_config(patch)
 
 
 def get_prompts():

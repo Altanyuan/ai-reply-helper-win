@@ -1,7 +1,13 @@
 # ---- 敏感信息：含真实 API Key，绝不能进版本库 ----
 config.json
 config - *.json
+# 迁移/手改前留下的备份，同样是明文 Key
+config.json.*
 .env
+
+# ---- 图标工具的中间产物 ----
+icon-rounded.ico
+icon.ico.bak
 
 # ---- 构建产物 ----
 build/
