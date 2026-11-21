@@ -11,6 +11,7 @@ import uiautomation as auto
 from pynput import keyboard, mouse as pynput_mouse
 
 import config
+import auto_reply
 import companions
 import first_run
 import paths
@@ -24,6 +25,12 @@ from ui import show_choices, show_error
 from tray_widget import make_tray
 
 tray = None  # 右下角浮动动图组件，main() 中初始化
+auto_replier = None  # 自动回复调度器，main() 中初始化
+
+
+def _auto_notify(msg, kind="info"):
+    """自动回复的状态提示统一走日志，避免弹窗打断用户。"""
+    log.info("[自动回复] %s", msg)
 
 logging.basicConfig(
     filename=str(paths.log_path()),
@@ -504,7 +511,7 @@ def on_activate():
 
 
 def main():
-    global tray
+    global tray, auto_replier
     _ensure_single_instance()      # 先接管旧实例，保证唯一且为最新修复版
     cfg = config.load_config()
 
@@ -575,6 +582,17 @@ def main():
     print(f"[会聊] 点击「鼠标中键（滚轮按下）」任意位置即可打开设置页"
           f"（默认「软件作者」页，含交流群 / 公众号二维码）；Ctrl+C 退出。")
 
+    # 自动回复调度器：线程常驻，是否动作完全由配置里的总开关决定。
+    # 常驻的好处是「在设置页打开开关后无需重启」，关掉时它只做一次开关判断，几乎无开销。
+    auto_replier = auto_reply.AutoReplier(notify=_auto_notify)
+    auto_reply.CURRENT = auto_replier
+    auto_replier.start()
+    if (cfg.get("auto_reply") or {}).get("enabled"):
+        log.info("自动回复：已启用，当前名单 %d 人",
+                 len((cfg.get("auto_reply") or {}).get("contacts") or []))
+    else:
+        log.info("自动回复：未启用")
+
     hotkeys = keyboard.GlobalHotKeys({combo: on_activate})
     hotkeys.start()
 
@@ -599,6 +617,8 @@ def main():
     finally:
         hotkeys.stop()
         mouse_listener.stop()
+        if auto_replier:
+            auto_replier.stop()
         if tray:
             tray.stop()
         log.info("已退出")

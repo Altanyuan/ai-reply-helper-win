@@ -171,6 +171,20 @@ DEFAULTS = {
     "prompts": [dict(p) for p in BUILTIN_PROMPTS],
     "active_prompt_id": BUILTIN_PROMPTS[0]["id"],
     "contact_rules": [],         # 本机微信聊天显示名称 → 提示词 ID
+    # 自动回复：总开关 + 每人一条规则（开关 + 风格）。
+    # contacts[*].prompt_id 为空 → 跟随 contact_rules，再没有就用全局当前提示词。
+    "auto_reply": {
+        "enabled": False,
+        "contacts": [],
+        "group_enabled": False,      # 群聊默认不自动回
+        "interval_sec": 60,          # 多久看一眼
+        "context_messages": 10,      # 给模型多少条上下文
+        "reply_delay_sec": [20, 90], # 生成后随机等这么久再发
+        "max_per_hour": 10,          # 每人每小时上限
+        "quiet_hours": ["22:00", "08:00"],
+        "auto_off_after_min": 120,   # 开启后自动关闭；0 = 不自动关
+        "ctrl_enter": False,         # 微信若设了 Ctrl+Enter 发送，这里要打开
+    },
 }
 
 
@@ -202,6 +216,8 @@ def load_config():
     cfg["active_prompt_id"] = BUILTIN_PROMPTS[0]["id"]
     # companion 是嵌套 dict：深拷贝 + 按键合并，避免共享引用与整表覆盖
     cfg["companion"] = dict(DEFAULTS["companion"])
+    # auto_reply 同理：老配置里没有这一段，靠按键合并拿到默认值
+    cfg["auto_reply"] = {**DEFAULTS["auto_reply"], "contacts": []}
 
     data = _read_json()
     if data:
@@ -214,6 +230,12 @@ def load_config():
             merged = dict(DEFAULTS["companion"])
             merged.update(data["companion"])
             cfg["companion"] = merged
+        if isinstance(data.get("auto_reply"), dict):
+            merged = {**DEFAULTS["auto_reply"], "contacts": []}
+            merged.update(data["auto_reply"])
+            if not isinstance(merged.get("contacts"), list):
+                merged["contacts"] = []
+            cfg["auto_reply"] = merged
 
     # 多模型配置：若存在 models，用它解析出「当前生效」的 api_base / model / api_key。
     # 放在环境变量之前，保证环境变量仍然拥有最高优先级（便于临时覆盖 / 保密）。
@@ -710,3 +732,70 @@ def set_active_model(mid):
     update_config({"active_model_id": mid})
     _mirror_active(mid, target.get("api_base"), target.get("model"))
     return True, f"已切换生效模型：{target.get('name', '未命名模型')}"
+
+
+# ---------- 自动回复 ----------
+
+def get_auto_reply():
+    """返回自动回复配置（补齐默认值，过滤非法条目）。
+
+    contacts 是「每人一条规则」：{name, enabled, prompt_id}。
+    prompt_id 为 None 表示跟随该联系人的「联系人规则」，再没有就用全局当前提示词。
+    """
+    raw = load_config().get("auto_reply") or {}
+    merged = {**DEFAULTS["auto_reply"], "contacts": []}
+    merged.update({k: v for k, v in raw.items() if k != "contacts"})
+
+    contacts = []
+    for rule in raw.get("contacts") or []:
+        if not isinstance(rule, dict):
+            continue
+        name = str(rule.get("name") or "").strip()
+        if not name:
+            continue
+        pid = str(rule.get("prompt_id") or "").strip()
+        contacts.append({
+            "name": name,
+            "enabled": bool(rule.get("enabled")),
+            "prompt_id": pid or None,
+        })
+    merged["contacts"] = contacts
+    return merged
+
+
+def set_auto_reply(patch):
+    """局部更新 auto_reply 段（只写这一块）。"""
+    ar = dict(load_config().get("auto_reply") or {})
+    ar.update(patch or {})
+    update_config({"auto_reply": ar})
+    return ar
+
+
+def upsert_auto_contact(name, enabled=True, prompt_id=None):
+    """新增或更新一条自动回复规则（按显示名精确匹配）。"""
+    name = str(name or "").strip()
+    if not name:
+        return get_auto_reply()
+    data = get_auto_reply()
+    contacts = data["contacts"]
+    for item in contacts:
+        if item["name"] == name:
+            item["enabled"] = bool(enabled)
+            item["prompt_id"] = (str(prompt_id).strip() or None) if prompt_id else None
+            break
+    else:
+        contacts.append({
+            "name": name,
+            "enabled": bool(enabled),
+            "prompt_id": (str(prompt_id).strip() or None) if prompt_id else None,
+        })
+    set_auto_reply({"contacts": contacts})
+    return get_auto_reply()
+
+
+def remove_auto_contact(name):
+    name = str(name or "").strip()
+    data = get_auto_reply()
+    contacts = [c for c in data["contacts"] if c["name"] != name]
+    set_auto_reply({"contacts": contacts})
+    return get_auto_reply()

@@ -24,6 +24,7 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 
+import auto_reply
 import config
 import companions
 import key_utils
@@ -344,6 +345,7 @@ class _Editor:
         _group("配置", top=20)
         for key, label in (("prompts", "提示词"),
                            ("contacts", "联系人规则"),
+                           ("auto_reply", "自动回复"),
                            ("companion", "智能伙伴"),
                            ("models", "模型与 Key")):
             _nav_item(key, label)
@@ -361,12 +363,14 @@ class _Editor:
         self.body.grid(row=0, column=1, sticky="nsew")
         self.tab_prompts = tk.Frame(self.body, bg=BG)
         self.tab_contacts = tk.Frame(self.body, bg=BG)
+        self.tab_auto = tk.Frame(self.body, bg=BG)
         self.tab_companion = tk.Frame(self.body, bg=BG)
         self.tab_models = tk.Frame(self.body, bg=BG)
         self.tab_usage = tk.Frame(self.body, bg=BG)
         self.tab_author = tk.Frame(self.body, bg=BG)
         self._build_prompts_tab()
         self._build_contact_rules_tab()
+        self._build_auto_reply_tab()
         self._build_companion_tab()
         self._build_models_tab()
         self._build_usage_tab()
@@ -375,6 +379,7 @@ class _Editor:
         self.tabs = {
             "prompts": self.tab_prompts,
             "contacts": self.tab_contacts,
+            "auto_reply": self.tab_auto,
             "companion": self.tab_companion,
             "models": self.tab_models,
             "usage": self.tab_usage,
@@ -1034,6 +1039,392 @@ class _Editor:
                      lambda i=index: self._delete_contact_rule(i),
                      bg=card_bg, fg=DANGER,
                      hover_fg=DANGER_HOVER).pack(side="right")
+
+    # ================= 自动回复页签 =================
+
+    def _build_auto_reply_tab(self):
+        """自动回复：总开关 + 每人一条规则（开关 + 风格）+ 节奏与限制。"""
+        data = config.get_auto_reply()
+        wrap = tk.Frame(self.tab_auto, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=24, pady=18)
+        wrap.columnconfigure(0, weight=1)
+
+        heading = tk.Frame(wrap, bg=BG)
+        heading.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        heading.columnconfigure(1, weight=1)
+        tk.Label(heading, text="自动回复", bg=BG, fg=TEXT, font=TITLE_FONT,
+                 anchor="w").grid(row=0, column=0, sticky="w")
+        _mk_btn(heading, "立即试一次", self._on_auto_try_once,
+                "secondary").grid(row=0, column=2, sticky="e", padx=(0, 10))
+        self.auto_badge = tk.Label(heading, text="未启用", bg=ACTIVE_BG, fg=MUTED,
+                                   font=SMALL_FONT, anchor="e", padx=8, pady=2)
+        self.auto_badge.grid(row=0, column=3, sticky="e", padx=(0, 12))
+        _mk_btn(heading, "从当前会话添加", self._on_auto_add_current,
+                "primary").grid(row=0, column=4, sticky="e")
+        self.auto_sub = tk.Label(heading, text="按每个人的风格，替名单里的人自动回消息",
+                                 bg=BG, fg=MUTED, font=SMALL_FONT, anchor="w",
+                                 justify="left")
+        self.auto_sub.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(3, 0))
+        _bind_wraplength(self.auto_sub, wrap, pad=48, min_w=200)
+
+        master = tk.Frame(wrap, bg=CARD_BG, highlightthickness=1,
+                          highlightbackground=BORDER)
+        master.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.auto_enabled_var = tk.BooleanVar(master=self.root, value=bool(data.get("enabled")))
+        tk.Checkbutton(master, text="启用自动回复", variable=self.auto_enabled_var,
+                       bg=CARD_BG, fg=TEXT, font=LABEL_FONT, anchor="w",
+                       activebackground=CARD_BG, activeforeground=TEXT,
+                       selectcolor=CARD_BG, highlightthickness=0, bd=0,
+                       command=self._on_auto_toggle).pack(
+                           side="left", padx=(12, 10), pady=9)
+        _mk_label(master, "关闭后所有人都不回复；热键润色不受影响",
+                  MUTED, SMALL_FONT).pack(side="left", pady=9)
+        self.auto_pause_link = _mk_link(master, "暂停 10 分钟",
+                                        self._on_auto_pause_toggle, bg=CARD_BG, fg=TEXT)
+        self.auto_pause_link.pack(side="right", padx=12)
+
+        card = tk.Frame(wrap, bg=CARD_BG, highlightthickness=1,
+                        highlightbackground=BORDER)
+        card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        head2 = tk.Frame(card, bg=CARD_BG)
+        head2.pack(fill="x", padx=12, pady=(10, 6))
+        _mk_label(head2, "回复对象", TEXT, NAME_FONT).pack(side="left")
+        _mk_label(head2, "开关打开的人才会被自动回复", MUTED, SMALL_FONT).pack(side="right")
+        self.auto_list_host = tk.Frame(card, bg=CARD_BG)
+        self.auto_list_host.pack(fill="x", padx=12, pady=(0, 4))
+        _mk_link(card, "+ 从当前会话添加", self._on_auto_add_current,
+                 bg=CARD_BG, fg=ACCENT).pack(anchor="w", padx=12, pady=(2, 10))
+
+        params = tk.Frame(wrap, bg=CARD_BG, highlightthickness=1,
+                          highlightbackground=BORDER)
+        params.grid(row=3, column=0, sticky="ew")
+        phead = tk.Frame(params, bg=CARD_BG)
+        phead.pack(fill="x", padx=12, pady=(10, 8))
+        _mk_label(phead, "回复节奏与限制", TEXT, NAME_FONT).pack(side="left")
+        _mk_label(phead, "看多勤 · 回多快 · 什么时候停", MUTED, SMALL_FONT).pack(side="right")
+
+        grid = tk.Frame(params, bg=CARD_BG)
+        grid.pack(fill="x", padx=12)
+        grid.columnconfigure(0, weight=1, uniform="p")
+        grid.columnconfigure(1, weight=1, uniform="p")
+
+        self.auto_fields = {}
+        delay = data.get("reply_delay_sec") or [20, 90]
+        quiet = data.get("quiet_hours") or ["22:00", "08:00"]
+
+        specs = [
+            ("interval_sec", "多久看一次（秒）", "spin", 15, 600, None),
+            ("context_messages", "带多少条上下文", "spin", 3, 60, None),
+            ("reply_delay", "生成后等多久再发（秒）", "text", 0, 0,
+             f"{float(delay[0]):g}~{float(delay[1]):g}"),
+            ("max_per_hour", "每人每小时最多（条）", "spin", 1, 60, None),
+            ("quiet_hours", "不回消息的时段", "text", 0, 0,
+             f"{quiet[0]}~{quiet[1]}"),
+            ("auto_off_after_min", "开启后自动关闭（分钟，0=不关）", "spin", 0, 720, None),
+        ]
+        for idx, (key, label, kind, lo, hi, initial) in enumerate(specs):
+            box = tk.Frame(grid, bg=CARD_BG)
+            box.grid(row=idx // 2, column=idx % 2, sticky="ew",
+                     padx=(0, 14), pady=(0, 10))
+            _mk_label(box, label, MUTED, SMALL_FONT).pack(anchor="w", pady=(0, 3))
+            if kind == "spin":
+                var = tk.StringVar(master=self.root, value=str(data.get(key, lo)))
+                widget = tk.Spinbox(box, from_=lo, to=hi, textvariable=var, width=1,
+                                    bg=FIELD_BG, fg=TEXT, relief="flat",
+                                    borderwidth=0, highlightthickness=1,
+                                    highlightbackground=FIELD_BORDER,
+                                    highlightcolor=ACCENT, font=LABEL_FONT,
+                                    buttonbackground=PANEL, justify="left")
+                widget.pack(fill="x", ipady=3)
+            else:
+                var = tk.StringVar(master=self.root, value=initial or "")
+                widget = _mk_entry(box)
+                widget.configure(textvariable=var)
+                widget.pack(fill="x", ipady=4)
+            self.auto_fields[key] = var
+
+        foot = tk.Frame(params, bg=CARD_BG)
+        foot.pack(fill="x", padx=12, pady=(2, 10))
+        self.auto_hint = _mk_label(
+            foot,
+            "微信不在前台时跳过这一轮，不会把窗口抢到前面；输入框里有你正在写的字时也不会发送。",
+            MUTED, SMALL_FONT, justify="left", wraplength=520)
+        self.auto_hint.pack(side="left", fill="x", expand=True)
+        _mk_btn(foot, "保存设置", self._on_auto_save_params, "secondary").pack(side="right", padx=(10, 0))
+
+        self._auto_prompt_mb = {}
+        self._render_auto_contacts()
+        self._refresh_auto_status()
+
+    def _render_auto_contacts(self):
+        host = getattr(self, "auto_list_host", None)
+        if host is None:
+            return
+        for child in host.winfo_children():
+            child.destroy()
+        self._auto_prompt_mb = {}
+
+        data = config.get_auto_reply()
+        contacts = data.get("contacts") or []
+        prompts = config.get_prompts()
+        names = [p.get("name") or "（未命名）" for p in prompts]
+        ids = [p.get("id") for p in prompts]
+        self._auto_prompt_names = names
+        self._auto_prompt_ids = ids
+
+        if not contacts:
+            _mk_label(host, "还没有回复对象。点「从当前会话添加」，或先打开要自动回复的聊天窗口。",
+                      MUTED, SMALL_FONT).pack(anchor="w", pady=(2, 4))
+            return
+
+        for item in contacts:
+            name = item["name"]
+            row = tk.Frame(host, bg=CARD_BG)
+            row.pack(fill="x", pady=3)
+            var = tk.BooleanVar(master=self.root, value=bool(item.get("enabled")))
+            tk.Checkbutton(row, text=name, variable=var, bg=CARD_BG, fg=TEXT,
+                           font=LABEL_FONT, anchor="w", selectcolor=CARD_BG,
+                           activebackground=CARD_BG, activeforeground=TEXT,
+                           highlightthickness=0, bd=0,
+                           command=lambda n=name, v=var: self._on_auto_contact_toggle(n, v)
+                           ).pack(side="left")
+            _mk_link(row, "删除", lambda n=name: self._on_auto_remove(n),
+                     bg=CARD_BG, fg=DANGER).pack(side="right")
+            done_today = self._auto_count_for(name)
+            _mk_label(row, f"已回 {done_today} 条" if item.get("enabled") else "已暂停",
+                      ACCENT if item.get("enabled") and done_today else MUTED,
+                      SMALL_FONT).pack(side="right", padx=(0, 12))
+
+            current = "跟随联系人规则"
+            pid = item.get("prompt_id")
+            if pid:
+                for i, x in enumerate(ids):
+                    if x == pid:
+                        current = names[i]
+                        break
+            # 用 Menubutton + Menu 而不是 OptionMenu：OptionMenu 的宽度会跟着选项文字
+            # 变（中文按两字符算），三行对不齐；而且它的指示器在 flat 样式下只剩一条横线。
+            holder = tk.Frame(row, bg=CARD_BG, width=178, height=26)
+            holder.pack(side="left", padx=(10, 12))
+            holder.pack_propagate(False)
+            mb = tk.Menubutton(holder, text=f"{current}  ▾", bg=FIELD_BG, fg=TEXT,
+                               relief="flat", anchor="w", font=SMALL_FONT,
+                               highlightthickness=1, highlightbackground=FIELD_BORDER,
+                               padx=8, cursor="hand2")
+            mb.pack(fill="both", expand=True)
+            menu = tk.Menu(mb, tearoff=0, font=SMALL_FONT)
+            for label in ["跟随联系人规则"] + names:
+                menu.add_command(
+                    label=label,
+                    command=lambda l=label, n=name: self._set_auto_prompt(n, l))
+            mb.configure(menu=menu)
+            self._auto_prompt_mb[name] = mb
+
+    def _on_auto_toggle(self):
+        enabled = bool(self.auto_enabled_var.get())
+        config.set_auto_reply({"enabled": enabled})
+        self._flash("已开启自动回复：只对名单里打开开关的人生效" if enabled
+                    else "已关闭自动回复", "ok" if enabled else "info")
+        self._refresh_auto_status()
+
+    def _on_auto_try_once(self):
+        """手动跑一轮：不用等 60 秒，也把随机延迟压到 3 秒，方便验证链路。"""
+        ar = auto_reply.CURRENT
+        if ar is None:
+            self._flash("自动回复还没启动（重启会聊后可用）", "warn")
+            return
+        self._flash("已触发一次，3 秒内出结果…", "info")
+
+        def work():
+            try:
+                ar.tick_once()
+            finally:
+                try:
+                    self.root.after(0, self._refresh_auto_status)
+                except Exception:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_auto_pause_toggle(self):
+        """同一个链接：没暂停就暂停 10 分钟，正在暂停就立即恢复。"""
+        try:
+            if auto_reply.CURRENT is None:
+                self._flash("自动回复还没启动（重启会聊后可用）", "warn")
+                return
+            st = auto_reply.CURRENT.status()
+            if st.get("paused_for"):
+                auto_reply.CURRENT.resume()
+                self._flash("已恢复自动回复", "ok")
+            else:
+                auto_reply.CURRENT.pause(600)
+                self._flash("已暂停 10 分钟，可随时点「恢复自动回复」", "ok")
+            self._refresh_auto_status()
+        except Exception as e:
+            self._flash(f"操作失败：{e}", "err")
+
+    def _on_auto_contact_toggle(self, name, var):
+        data = config.get_auto_reply()
+        cur = next((c for c in data["contacts"] if c["name"] == name), None)
+        pid = cur.get("prompt_id") if cur else None
+        config.upsert_auto_contact(name, enabled=bool(var.get()), prompt_id=pid)
+        self._flash(f"「{name}」自动回复已{'打开' if var.get() else '关闭'}", "ok")
+        self._refresh_auto_status()
+
+    def _set_auto_prompt(self, name, label):
+        """用户在下拉里选了某个风格：立刻写配置（即时生效，不用再点保存）。"""
+        mb = getattr(self, "_auto_prompt_mb", {}).get(name)
+        if mb is not None:
+            try:
+                mb.configure(text=f"{label}  ▾")
+            except Exception:
+                pass
+        pid = None
+        if label != "跟随联系人规则":
+            try:
+                pid = self._auto_prompt_ids[self._auto_prompt_names.index(label)]
+            except ValueError:
+                pid = None
+        data = config.get_auto_reply()
+        cur = next((c for c in data["contacts"] if c["name"] == name), None)
+        enabled = bool(cur.get("enabled")) if cur else True
+        config.upsert_auto_contact(name, enabled=enabled, prompt_id=pid)
+        self._flash(f"「{name}」的回复风格：{label}", "ok")
+
+    def _on_auto_remove(self, name):
+        if not self._confirm("移出名单", f"不再自动回复「{name}」？\n聊天记录与提示词都不受影响。"):
+            return
+        config.remove_auto_contact(name)
+        self._render_auto_contacts()
+        self._refresh_auto_status()
+        self._flash(f"已移出：{name}", "ok")
+
+    def _on_auto_add_current(self):
+        self._flash("正在读取当前微信会话名…", "info")
+
+        def work():
+            title = ""
+            try:
+                import capturer
+                _, title = capturer.read_wechat_recent_with_title(n=3)
+            except Exception:
+                title = ""
+
+            def done():
+                try:
+                    if title:
+                        config.upsert_auto_contact(title, enabled=True, prompt_id=None)
+                        self._render_auto_contacts()
+                        self._refresh_auto_status()
+                        self._flash(f"已添加「{title}」", "ok")
+                    else:
+                        self._flash("没读到当前会话名，请把微信聊天窗口打开再试", "warn")
+                except Exception as e:
+                    self._flash(f"添加失败：{e}", "err")
+
+            try:
+                self.root.after(0, done)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_auto_save_params(self):
+        patch = {}
+        try:
+            patch["interval_sec"] = max(15, int(float(self.auto_fields["interval_sec"].get())))
+            patch["context_messages"] = max(3, int(float(self.auto_fields["context_messages"].get())))
+            patch["max_per_hour"] = max(1, int(float(self.auto_fields["max_per_hour"].get())))
+            patch["auto_off_after_min"] = max(0, int(float(self.auto_fields["auto_off_after_min"].get())))
+        except Exception:
+            self._flash("节奏参数要填数字", "err")
+            return
+
+        try:
+            raw = self.auto_fields["reply_delay"].get().replace("，", "~").replace("-", "~")
+            parts = [x.strip() for x in raw.split("~") if x.strip()]
+            lo = float(parts[0]) if parts else 20.0
+            hi = float(parts[1]) if len(parts) > 1 else lo + 60
+            if hi < lo:
+                lo, hi = hi, lo
+            patch["reply_delay_sec"] = [lo, hi]
+        except Exception:
+            self._flash("「生成后等多久」格式像 20~90", "err")
+            return
+
+        try:
+            raw = self.auto_fields["quiet_hours"].get().replace("～", "~").replace("—", "~")
+            parts = [x.strip() for x in raw.split("~") if x.strip()]
+            if len(parts) >= 2 and ":" in parts[0] and ":" in parts[1]:
+                patch["quiet_hours"] = [parts[0], parts[1]]
+            else:
+                patch["quiet_hours"] = []
+        except Exception:
+            patch["quiet_hours"] = []
+
+        config.set_auto_reply(patch)
+        self._refresh_auto_status()
+        self._flash("节奏与限制已保存", "ok")
+
+    def _auto_count_for(self, name):
+        """今日已为该联系人回过几条（从调度器的实时状态读）。"""
+        try:
+            st = auto_reply.CURRENT.status() if auto_reply.CURRENT else None
+            if st:
+                return int((st.get("by_contact") or {}).get(name, 0))
+        except Exception:
+            pass
+        return 0
+
+    def _refresh_auto_status(self):
+        badge = getattr(self, "auto_badge", None)
+        sub = getattr(self, "auto_sub", None)
+        if badge is None:
+            return
+        data = config.get_auto_reply()
+        contacts = data.get("contacts") or []
+        on = sum(1 for c in contacts if c.get("enabled"))
+        enabled = bool(data.get("enabled"))
+
+        today, paused, reason = 0, 0, ""
+        try:
+            st = auto_reply.CURRENT.status() if auto_reply.CURRENT else None
+            if st:
+                today = int(st.get("today_count") or 0)
+                paused = int(st.get("paused_for") or 0)
+                reason = (st.get("last_reason") or "").strip()
+        except Exception:
+            pass
+
+        if enabled and paused:
+            text = f"暂停中 · 还有 {max(1, paused // 60)} 分钟"
+        elif enabled:
+            text = f"运行中 · 今日已回 {today} 条"
+        else:
+            text = "未启用"
+        try:
+            badge.configure(text=text,
+                            bg=ACTIVE_BG if enabled else "#eceff1",
+                            fg=ACCENT if enabled and not paused else MUTED)
+        except Exception:
+            pass
+
+        link = getattr(self, "auto_pause_link", None)
+        if link is not None:
+            try:
+                link.configure(text="恢复自动回复" if (enabled and paused) else "暂停 10 分钟",
+                               fg=ACCENT if (enabled and paused) else TEXT)
+            except Exception:
+                pass
+
+        if sub is not None:
+            base = f"按每个人的风格，替名单里的人自动回消息 · 名单 {len(contacts)} 人（{on} 人开启）"
+            if reason:
+                base += f"　·　本次判断：{reason}"
+            try:
+                sub.configure(text=base)
+            except Exception:
+                pass
 
     def _add_contact_rule(self):
         self._open_contact_rule_dialog()

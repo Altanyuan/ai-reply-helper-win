@@ -17,6 +17,8 @@ dist_diagnose/
 
 # ---- 运行时生成 ----
 *.log
+auto_reply_state.json
+@AutomationLog.txt
 polish.log
 debug.log
 .wechat_polish.lock
