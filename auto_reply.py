@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import unicodedata
 import threading
 import time
 from collections import deque
@@ -93,16 +94,27 @@ def in_quiet_hours(start: str, end: str, now: time.struct_time | None = None) ->
     return cur >= a or cur < b
 
 
+def normalize_name(text: str) -> str:
+    """名字归一化后再比对。
+
+    为什么要做（实测会遇到）：微信昵称里常见全角字母/数字，OCR 也可能把
+    半角读成全角（「ＡＢＣ」vs「ABC」），大小写也可能不一致。逐字符相等
+    会导致「明明看着一样，就是匹配不上」，表现为这个人的自动回复永远不生效。
+    NFKC 把全角压成半角，casefold 抹掉大小写差异。
+    """
+    return unicodedata.normalize("NFKC", str(text or "")).strip().casefold()
+
+
 def match_rule(ar: dict, title: str) -> dict | None:
-    """在自动回复名单里精确匹配会话名（跟联系人规则同一套口径：只去首尾空格）。"""
-    name = (title or "").strip()
+    """在自动回复名单里匹配会话名（归一化后比较，重名不猜）。"""
+    name = normalize_name(title)
     if not name:
         return None
     hit = None
     for rule in ar.get("contacts") or []:
         if not isinstance(rule, dict):
             continue
-        if str(rule.get("name") or "").strip() == name:
+        if normalize_name(rule.get("name")) == name:
             if hit is not None:
                 return None  # 重名 → 不猜，直接放过（宁可不回，也不要回错人）
             hit = rule
@@ -214,13 +226,36 @@ class AutoReplier:
             return 60
 
     def _loop(self):
-        while not self._stop.is_set():
-            try:
-                self._tick()
-            except Exception:
-                log.exception("自动回复循环异常")
-            # 用 wait 而不是 sleep：停止时能立刻醒来
-            self._stop.wait(self._interval())
+        """调度线程。
+
+        必须在本线程里初始化 COM：capturer 会先走 UIA 路径（uiautomation），
+        而 UIA 依赖 COM；子线程没 CoInitialize 时会抛
+        `[WinError -2147221008] 尚未调用 CoInitialize`，然后被吞掉、
+        只剩「未找到微信窗口」，表现为 UIA 路径永远失效
+        （微信 3.x 只能走 UIA，那它就读不到任何消息）。
+        """
+        ui = None
+        try:
+            import uiautomation as _uia
+            ui = _uia.UIAutomationInitializerInThread()
+            ui.__enter__()
+        except Exception as e:
+            log.warning("自动回复线程初始化 UIA 失败（仅影响 UIA 路径）：%s", e)
+            ui = None
+        try:
+            while not self._stop.is_set():
+                try:
+                    self._tick()
+                except Exception:
+                    log.exception("自动回复循环异常")
+                # 用 wait 而不是 sleep：停止时能立刻醒来
+                self._stop.wait(self._interval())
+        finally:
+            if ui is not None:
+                try:
+                    ui.__exit__(None, None, None)
+                except Exception:
+                    pass
 
     def tick_once(self, delay_override: float | None = 3.0):
         """手动触发一轮（设置页的「立即试一次」）。默认把随机延迟压到 3 秒，便于验证。"""
@@ -263,8 +298,11 @@ class AutoReplier:
 
         state, hwnd, why = sender.wechat_state()
         if state != "foreground":
-            self._say(why or "微信不在前台")
-            return
+            # activate_window 打开时，微信在后台也允许继续（发送前会把它切到前台）
+            allow_bg = bool(ar.get("activate_window")) and state == "background"
+            if not allow_bg:
+                self._say(why or "微信不在前台")
+                return
 
         # 用户刚动过键鼠 → 这轮别插手（也避免 capture_draft 的 Ctrl+A 打扰他）
         if sender.idle_seconds() < 2.0:
@@ -355,8 +393,10 @@ class AutoReplier:
         # ---- 闸 3：仍在前台 ----
         state2, hwnd2, why3 = sender.wechat_state()
         if state2 != "foreground":
-            self._say(f"微信不在前台了（{why3}），放弃发送")
-            return
+            allow_bg = bool(ar.get("activate_window")) and state2 == "background"
+            if not allow_bg:
+                self._say(f"微信不在前台了（{why3}），放弃发送")
+                return
 
         # ---- 闸 2：输入框是空的 ----
         draft = sender.read_input_text()
@@ -365,7 +405,8 @@ class AutoReplier:
             return
 
         # ---- 发送 ----
-        if sender.send_text(reply, hwnd2, ctrl_enter=bool(ar.get("ctrl_enter"))):
+        if sender.send_text(reply, hwnd2, ctrl_enter=bool(ar.get("ctrl_enter")),
+                            restore_focus=bool(ar.get("activate_window"))):
             self._mark_sent(fp, title, ar)
             self._fail_streak = 0
             self._last_action = f"已回复 {title}（{time.strftime('%H:%M')}）"
@@ -390,7 +431,9 @@ class AutoReplier:
         return c
 
     def _rate_ok(self, title: str, ar: dict) -> bool:
-        limit = int(ar.get("max_per_hour") or 10)
+        limit = int(ar.get("max_per_hour") or 0)
+        if limit <= 0:
+            return True  # 0 = 不限
         q = self._hour_hits.setdefault(title, deque())
         cutoff = time.time() - 3600
         while q and q[0] < cutoff:

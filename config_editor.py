@@ -22,6 +22,7 @@
 """
 import threading
 import tkinter as tk
+import tkinter.simpledialog as simpledialog
 import tkinter.font as tkfont
 
 import auto_reply
@@ -1101,7 +1102,7 @@ class _Editor:
         phead = tk.Frame(params, bg=CARD_BG)
         phead.pack(fill="x", padx=12, pady=(10, 8))
         _mk_label(phead, "回复节奏与限制", TEXT, NAME_FONT).pack(side="left")
-        _mk_label(phead, "看多勤 · 回多快 · 什么时候停", MUTED, SMALL_FONT).pack(side="right")
+        _mk_label(phead, "多久扫一次 · 带多少条上下文", MUTED, SMALL_FONT).pack(side="right")
 
         grid = tk.Frame(params, bg=CARD_BG)
         grid.pack(fill="x", padx=12)
@@ -1109,18 +1110,9 @@ class _Editor:
         grid.columnconfigure(1, weight=1, uniform="p")
 
         self.auto_fields = {}
-        delay = data.get("reply_delay_sec") or [20, 90]
-        quiet = data.get("quiet_hours") or ["22:00", "08:00"]
-
         specs = [
             ("interval_sec", "多久看一次（秒）", "spin", 15, 600, None),
             ("context_messages", "带多少条上下文", "spin", 3, 60, None),
-            ("reply_delay", "生成后等多久再发（秒）", "text", 0, 0,
-             f"{float(delay[0]):g}~{float(delay[1]):g}"),
-            ("max_per_hour", "每人每小时最多（条）", "spin", 1, 60, None),
-            ("quiet_hours", "不回消息的时段", "text", 0, 0,
-             f"{quiet[0]}~{quiet[1]}"),
-            ("auto_off_after_min", "开启后自动关闭（分钟，0=不关）", "spin", 0, 720, None),
         ]
         for idx, (key, label, kind, lo, hi, initial) in enumerate(specs):
             box = tk.Frame(grid, bg=CARD_BG)
@@ -1143,14 +1135,28 @@ class _Editor:
                 widget.pack(fill="x", ipady=4)
             self.auto_fields[key] = var
 
+        self.auto_activate_var = tk.BooleanVar(master=self.root,
+                                               value=bool(data.get("activate_window")))
+        opt_row = tk.Frame(params, bg=CARD_BG)
+        opt_row.pack(fill="x", padx=12, pady=(2, 2))
+        tk.Checkbutton(opt_row,
+                       text="发送时把微信切到前台（微信在后台也能回；发完尽量切回原窗口）",
+                       variable=self.auto_activate_var, bg=CARD_BG, fg=TEXT,
+                       font=SMALL_FONT, anchor="w", selectcolor=CARD_BG,
+                       activebackground=CARD_BG, activeforeground=TEXT,
+                       highlightthickness=0, bd=0,
+                       command=self._on_auto_activate_toggle).pack(side="left")
+
         foot = tk.Frame(params, bg=CARD_BG)
         foot.pack(fill="x", padx=12, pady=(2, 10))
         self.auto_hint = _mk_label(
             foot,
-            "微信不在前台时跳过这一轮，不会把窗口抢到前面；输入框里有你正在写的字时也不会发送。",
+            "生成后立即发送，不限每小时条数，不设静默时段，也不会自动关闭。\n"
+            "没勾上面那项时：微信不在前台就跳过这一轮；两种情况都不会覆盖你正在写的字。",
             MUTED, SMALL_FONT, justify="left", wraplength=520)
         self.auto_hint.pack(side="left", fill="x", expand=True)
-        _mk_btn(foot, "保存设置", self._on_auto_save_params, "secondary").pack(side="right", padx=(10, 0))
+        self.btn_auto_save = _mk_btn(foot, "保存设置", self._on_auto_save_params, "secondary")
+        self.btn_auto_save.pack(side="right", padx=(10, 0))
 
         self._auto_prompt_mb = {}
         self._render_auto_contacts()
@@ -1227,6 +1233,13 @@ class _Editor:
                     else "已关闭自动回复", "ok" if enabled else "info")
         self._refresh_auto_status()
 
+    def _on_auto_activate_toggle(self):
+        on = bool(self.auto_activate_var.get())
+        config.set_auto_reply({"activate_window": on})
+        self._flash(
+            "已开启：微信在后台也会被切到前台发送（会短暂抢一次焦点）" if on
+            else "已关闭：只有微信在前台时才回复", "ok" if on else "info")
+
     def _on_auto_try_once(self):
         """手动跑一轮：不用等 60 秒，也把随机延迟压到 3 秒，方便验证链路。"""
         ar = auto_reply.CURRENT
@@ -1300,7 +1313,13 @@ class _Editor:
         self._flash(f"已移出：{name}", "ok")
 
     def _on_auto_add_current(self):
-        self._flash("正在读取当前微信会话名…", "info")
+        """读当前会话名并添加。
+
+        为什么最后一定会弹框：读不到标题时（窗口被设置页遮挡、OCR 定位失败）
+        原来只在底栏闪一句，用户只会觉得「点了没反应」。现在无论成功失败都弹框，
+        读到了就让他确认（可改），没读到就让他手打——不会卡死在半路。
+        """
+        self._flash("正在读取当前会话名（约 3 秒）…", "info")
 
         def work():
             title = ""
@@ -1309,62 +1328,91 @@ class _Editor:
                 _, title = capturer.read_wechat_recent_with_title(n=3)
             except Exception:
                 title = ""
-
-            def done():
-                try:
-                    if title:
-                        config.upsert_auto_contact(title, enabled=True, prompt_id=None)
-                        self._render_auto_contacts()
-                        self._refresh_auto_status()
-                        self._flash(f"已添加「{title}」", "ok")
-                    else:
-                        self._flash("没读到当前会话名，请把微信聊天窗口打开再试", "warn")
-                except Exception as e:
-                    self._flash(f"添加失败：{e}", "err")
-
             try:
-                self.root.after(0, done)
+                self.root.after(0, lambda: done(title or ""))
             except Exception:
                 pass
+
+        def done(title):
+            if title:
+                prompt = "确认要自动回复的会话名（可直接改）："
+            else:
+                prompt = ("没读到当前会话名（微信窗口可能被设置页挡住了）。\n"
+                          "请手动输入微信顶部显示的完整名字：")
+            try:
+                name = simpledialog.askstring("添加回复对象", prompt,
+                                              initialvalue=title, parent=self.root)
+            except Exception:
+                name = title
+            if not name or not name.strip():
+                if not title:
+                    self._flash("已取消：没读到会话名，也没手动输入", "warn")
+                return
+            name = name.strip()
+            try:
+                config.upsert_auto_contact(name, enabled=True, prompt_id=None)
+                self._render_auto_contacts()
+                self._refresh_auto_status()
+                self._flash(f"已添加「{name}」", "ok")
+            except Exception as e:
+                self._flash(f"添加失败：{e}", "err")
 
         threading.Thread(target=work, daemon=True).start()
 
     def _on_auto_save_params(self):
-        patch = {}
+        """保存节奏参数。
+
+        填错时用弹框（而不是底栏那行小字）：底栏在窗口最左下角，视线在表单上时
+        很容易漏看，用户只会觉得「点了保存没反应」。保存成功后把焦点从输入框移开，
+        否则光标一直闪在数字后面，也像没保存完。
+        """
+        from tkinter import messagebox
+
         try:
-            patch["interval_sec"] = max(15, int(float(self.auto_fields["interval_sec"].get())))
-            patch["context_messages"] = max(3, int(float(self.auto_fields["context_messages"].get())))
-            patch["max_per_hour"] = max(1, int(float(self.auto_fields["max_per_hour"].get())))
-            patch["auto_off_after_min"] = max(0, int(float(self.auto_fields["auto_off_after_min"].get())))
+            interval = int(float(self.auto_fields["interval_sec"].get()))
         except Exception:
-            self._flash("节奏参数要填数字", "err")
+            messagebox.showerror("保存失败", "「多久看一次」要填数字，单位是秒。",
+                                 parent=self.root)
+            return
+        try:
+            context = int(float(self.auto_fields["context_messages"].get()))
+        except Exception:
+            messagebox.showerror("保存失败", "「带多少条上下文」要填数字。",
+                                 parent=self.root)
+            return
+        if interval < 5:
+            messagebox.showerror("保存失败", "「多久看一次」不能小于 5 秒。", parent=self.root)
+            return
+        if context < 1:
+            messagebox.showerror("保存失败", "「带多少条上下文」至少填 1。", parent=self.root)
             return
 
-        try:
-            raw = self.auto_fields["reply_delay"].get().replace("，", "~").replace("-", "~")
-            parts = [x.strip() for x in raw.split("~") if x.strip()]
-            lo = float(parts[0]) if parts else 20.0
-            hi = float(parts[1]) if len(parts) > 1 else lo + 60
-            if hi < lo:
-                lo, hi = hi, lo
-            patch["reply_delay_sec"] = [lo, hi]
-        except Exception:
-            self._flash("「生成后等多久」格式像 20~90", "err")
-            return
-
-        try:
-            raw = self.auto_fields["quiet_hours"].get().replace("～", "~").replace("—", "~")
-            parts = [x.strip() for x in raw.split("~") if x.strip()]
-            if len(parts) >= 2 and ":" in parts[0] and ":" in parts[1]:
-                patch["quiet_hours"] = [parts[0], parts[1]]
-            else:
-                patch["quiet_hours"] = []
-        except Exception:
-            patch["quiet_hours"] = []
-
-        config.set_auto_reply(patch)
+        config.set_auto_reply({
+            "interval_sec": interval,
+            "context_messages": context,
+            # 这四项已从界面移除，固定为「立即发送 / 不限频 / 不静默 / 不自动关闭」
+            "reply_delay_sec": [0, 0],
+            "max_per_hour": 0,
+            "quiet_hours": [],
+            "auto_off_after_min": 0,
+        })
         self._refresh_auto_status()
-        self._flash("节奏与限制已保存", "ok")
+
+        try:
+            self.root.focus_set()          # 让输入框失去光标
+        except Exception:
+            pass
+        try:
+            self.btn_auto_save.configure(text="已保存")
+            self.root.after(1500, lambda: self._reset_auto_save_btn())
+        except Exception:
+            pass
+
+    def _reset_auto_save_btn(self):
+        try:
+            self.btn_auto_save.configure(text="保存设置")
+        except Exception:
+            pass
 
     def _auto_count_for(self, name):
         """今日已为该联系人回过几条（从调度器的实时状态读）。"""

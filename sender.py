@@ -111,11 +111,22 @@ def read_input_text() -> str:
     return text.strip()
 
 
-def send_text(text: str, hwnd: int | None = None, ctrl_enter: bool = False) -> bool:
-    """回填并回车发送。返回是否发出（不代表对方收到）。"""
+def send_text(text: str, hwnd: int | None = None, ctrl_enter: bool = False,
+              restore_focus: bool = False) -> bool:
+    """回填并回车发送。返回是否发出（不代表对方收到）。
+
+    restore_focus：发送完把焦点还给原来那个窗口。仅在「允许激活微信」时才需要——
+    否则会把用户从会聊/浏览器里抢到微信，发完不还回去体验很糟。
+    """
     text = (text or "").strip()
     if not text:
         return False
+    prev = 0
+    if restore_focus:
+        try:
+            prev = user32.GetForegroundWindow()
+        except Exception:
+            prev = 0
     try:
         paste_back.paste_back(text, target_hwnd=hwnd)
     except Exception as e:
@@ -131,6 +142,12 @@ def send_text(text: str, hwnd: int | None = None, ctrl_enter: bool = False) -> b
         else:
             _kb.press(Key.enter)
             _kb.release(Key.enter)
+        if restore_focus and prev and prev != hwnd:
+            time.sleep(0.35)
+            try:
+                user32.SetForegroundWindow(prev)
+            except Exception:
+                pass
         return True
     except Exception as e:
         log.warning("回车发送失败：%s", e)

@@ -179,11 +179,12 @@ DEFAULTS = {
         "group_enabled": False,      # 群聊默认不自动回
         "interval_sec": 60,          # 多久看一眼
         "context_messages": 10,      # 给模型多少条上下文
-        "reply_delay_sec": [20, 90], # 生成后随机等这么久再发
-        "max_per_hour": 10,          # 每人每小时上限
-        "quiet_hours": ["22:00", "08:00"],
-        "auto_off_after_min": 120,   # 开启后自动关闭；0 = 不自动关
+        "reply_delay_sec": [0, 0],   # 0 = 生成后立即发送
+        "max_per_hour": 0,           # 0 = 不限条数
+        "quiet_hours": [],           # 空 = 不设静默时段
+        "auto_off_after_min": 0,     # 0 = 不自动关闭
         "ctrl_enter": False,         # 微信若设了 Ctrl+Enter 发送，这里要打开
+        "activate_window": False,    # 允许发送时把微信切到前台（微信在后台也能回）
     },
 }
 
