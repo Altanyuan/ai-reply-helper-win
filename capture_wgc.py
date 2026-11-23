@@ -206,14 +206,25 @@ def _area_with_bg(full, bg):
     min_w = max(_MIN_W, int(W * _MIN_W_RATIO))
     min_h = max(_MIN_H, int(H * _MIN_H_RATIO))
 
-    # 左右边界：阈值逐级放宽，取第一档「宽度够得像面板」的结果。
-    # 会话列表是另一种底色（占比≈0），放宽阈值也不会被并进来。
+    # 左右边界：先用「标题栏中间那一行」定，再退回列占比阶梯。
+    #
+    # 为什么先试标题栏（2026-11-23 踩到的）：列占比是对 H/4~3H/4 求平均，
+    # 一旦对方头像 + 气泡集中在左侧，那一段的占比会被拉到阈值以下，
+    # 左边界就跳到了气泡右侧（实测 340 → 573），把对方消息整段切掉、
+    # 只剩一两条自己的气泡。标题栏那一行只有会话列表 + 会话名 + 几个按钮，
+    # 几乎全是面板底色，定出来的边界稳定得多。
     x0 = x1 = 0
-    for ratio in _COL_RATIO_LADDER:
-        start, end = _longest_span(col > ratio, gap)
-        if end - start >= min_w:
-            x0, x1 = int(start), int(end)
-            break
+    probe_y = min(H - 1, max(1, int(H * _HEADER_RATIO) // 2))
+    start, end = _longest_span(isbg[probe_y], gap)
+    if end - start >= min_w:
+        x0, x1 = int(start), int(end)
+
+    if x1 - x0 < 1:
+        for ratio in _COL_RATIO_LADDER:
+            start, end = _longest_span(col > ratio, gap)
+            if end - start >= min_w:
+                x0, x1 = int(start), int(end)
+                break
     if x1 - x0 < 1:
         log.info("消息区定位失败：逐列底色占比不足（面板被内容切断，或底色候选不对）")
         return None
@@ -263,16 +274,50 @@ def chat_area(full):
     H, W = full.shape[:2]
     if H < 120 or W < 200:
         return None
+
+    # 会话列表的右边界：取标题栏带的「面板底色列」起点。
+    # 会话列表是另一种底色（在面板底色掩码里占比≈0），所以它天然被排除；
+    # 允许较大的 gap 跨过标题栏右侧的几个按钮图标。
+    list_right = None
+    try:
+        band_y0 = max(0, int(H * _HEADER_RATIO) // 3)
+        band_y1 = max(band_y0 + 1, int(H * _HEADER_RATIO))
+        probe = (np.abs(full[band_y0:band_y1].astype(np.int16) - np.array([250, 250, 250]))
+                 .sum(-1) <= _BG_TOL).mean(0) > 0.5
+        p_start, p_end = _longest_span(probe, max(24, int(W * 0.04)))
+        if p_end - p_start >= max(_MIN_W, int(W * _MIN_W_RATIO)):
+            list_right = int(p_start)
+    except Exception:
+        list_right = None
+
     best = None
     for bg in _bg_candidates(full):
         area = _area_with_bg(full, bg)
         if area is None:
             continue
+        # 钳制左边界：算法用「中间半高的列占比」容易被对方头像+气泡顶到右侧
+        # （实测 340 → 573，把对方消息整段切掉）。会话列表右边界是硬的，用它兜底。
+        if list_right and 200 <= list_right < area[0]:
+            area = (list_right, area[1], area[2], area[3], area[4])
         # 消息区必然比输入框区更靠上：谁算出来的 y_top 更小，谁才抓对了面板。
         # （用「面积最大」当判据会选错 —— 底部输入框区往往又高又干净。）
         if best is None or area[1] < best[1]:
             best = area
     return best
+
+
+# 标题裁剪带的左边界上限：微信会话列表宽度在 300~340px 之间且不随窗口缩放，
+# 取 min(area.x0, 320) 既能跳过列表（排除搜索框、首个会话名的干扰），
+# 又能在 area.x0 抖到 573 时仍把会话名包进来。
+_HEADER_CROP_LEFT_MAX = 320
+_HEADER_CROP_RATIO = 0.6
+
+
+def header_crop_bounds(frame_width, area_x0):
+    """标题裁剪带的 (x0, x1)。识别与候选过滤共用，避免两处各算一遍而错位。"""
+    x0 = max(0, min(int(area_x0 or 0), _HEADER_CROP_LEFT_MAX))
+    x1 = max(x0 + 160, min(int(frame_width), int(frame_width * _HEADER_CROP_RATIO)))
+    return x0, x1
 
 
 def recognize_chat_header(full, area):
@@ -287,8 +332,12 @@ def recognize_chat_header(full, area):
     x0, y_top, x1, _y_in, _pane_bg = area
     height, width = full.shape[:2]
     header_h = min(_HEADER_MAX, max(_TITLE_OCR_MIN, int(height * _HEADER_RATIO)))
-    x0 = max(0, min(int(x0), width))
-    x1 = max(x0, min(int(x1), width))
+    # 标题栏按**窗口**坐标取，不跟着聊天区的左边界走。
+    # 踩过的坑（2026-11-23）：chat_area 的左边界在同一窗口上会在 340 / 573 之间跳
+    # （取决于帧里的深色像素分布），一旦偏到 573，标题区就从聊天区开始裁，
+    # 左侧的会话名被整个切掉，OCR 只剩右侧窗口按钮字符 → 读不到会话名，
+    # 自动回复整轮跳过。标题永远在窗口左上，用固定比例最稳。
+    x0, x1 = header_crop_bounds(width, x0)
     # WGC captures the non-client caption on windowed WeChat. In that mode
     # the title row sits lower than the height estimate, so prefer the
     # detected chat-area top (the bottom edge of the header), capped to avoid
@@ -751,7 +800,10 @@ def read_recent_with_title(hwnd, n=None, timeout=GRAB_TIMEOUT,
         return [], None
 
     header_boxes, _header_info = recognize_chat_header(full, area)
-    title = select_chat_title(header_boxes, area[2] - area[0])
+    # 与 recognize_chat_header 的裁剪宽度保持一致（窗口宽度的 35%），
+    # 而不是聊天区宽度——否则 area 抖动时 left_limit 也跟着缩，标题会被判成"不在左侧"
+    _hx0, _hx1 = header_crop_bounds(full.shape[1], area[0])
+    title = select_chat_title(header_boxes, _hx1 - _hx0)
     if not include_messages:
         return [], title
 
