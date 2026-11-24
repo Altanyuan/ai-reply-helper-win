@@ -1372,9 +1372,11 @@ class _Editor:
         fail = int(task.get("fail_count") or 0)
         if fail:
             return f"失败 {fail} 次"
+        # 一次性任务：只要执行过就是已完成，与 enabled 无关
+        # （曾经出现 enabled=True 又「已执行」的矛盾状态）
+        if task.get("kind") == "once" and task.get("last_run"):
+            return "已完成"
         if not task.get("enabled"):
-            if task.get("kind") == "once" and task.get("last_run"):
-                return "已完成"
             return "已停用"
         last = str(task.get("last_result") or "")
         if last.startswith("失败") or last.startswith("已发送"):
@@ -1409,6 +1411,8 @@ class _Editor:
         if int(task.get("fail_count") or 0):
             return "失败 3 次会自动停用"
         if task.get("kind") == "once":
+            if task.get("last_run"):
+                return f"执行于 {task['last_run']}"
             return task.get("at") or ""
         time_str = task.get("time") or "00:00"
         days = task.get("days") or []
@@ -1447,7 +1451,9 @@ class _Editor:
             return
         data = config.get_scheduled()
         tasks = data.get("tasks") or []
-        ready = [t for t in tasks if t.get("enabled")]
+        # 已完成的一次性任务不算"待发"（即使 enabled 因为历史数据仍是 true）
+        ready = [t for t in tasks
+                 if t.get("enabled") and not (t.get("kind") == "once" and t.get("last_run"))]
         enabled = bool(data.get("enabled"))
 
         if enabled:
@@ -1635,17 +1641,20 @@ class _Editor:
         def do_save(enable=False):
             from tkinter import messagebox
             payload = collect()
+            # 必须在写盘**之前**拦：之前是先 upsert 再提示，配置已经被改成启用了，
+            # 于是列表左边显示「已执行」、右上角显示「待执行」，自相矛盾。
+            if enable and payload.get("kind") == "once" and payload.get("last_run"):
+                messagebox.showwarning(
+                    "这条已执行过",
+                    "一次性任务执行过之后不能再启用。\n\n需要重发请新建一条。",
+                    parent=dlg)
+                return None
             if enable:
                 payload["enabled"] = True
             saved, err = config.upsert_task(payload)
             if err:
                 messagebox.showerror("保存失败", err, parent=dlg)
                 return None
-            if enable and saved.get("kind") == "once" and saved.get("last_run"):
-                messagebox.showwarning(
-                    "这条已执行过",
-                    "一次性任务执行过之后不能再启用。\n\n需要重发请新建一条。",
-                    parent=dlg)
             task.clear()
             task.update(saved)
             self._render_tasks()
