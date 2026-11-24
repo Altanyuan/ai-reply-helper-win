@@ -67,7 +67,7 @@ class Scheduler:
 
     def status(self) -> dict:
         tasks = config.get_scheduled().get("tasks") or []
-        enabled = [t for t in tasks if t.get("enabled") and t.get("verified")]
+        enabled = [t for t in tasks if t.get("enabled")]
         return {
             "running": self.running,
             "enabled_count": len(enabled),
@@ -119,8 +119,6 @@ class Scheduler:
         tid = task.get("id") or ""
         if not task.get("enabled"):
             return False, ""
-        if not task.get("verified"):
-            return False, f"「{task.get('name')}」还没试运行过，不执行"
         if tid in self._running_ids:
             return False, ""
         if self._cooldown.get(tid, 0) > time.time():

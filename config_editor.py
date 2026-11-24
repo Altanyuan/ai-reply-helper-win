@@ -1404,7 +1404,7 @@ class _Editor:
         return f"{when} · 好友「{target}」"
 
     def _task_next_text(self, task) -> str:
-        if not task.get("enabled") or not task.get("verified"):
+        if not task.get("enabled"):
             return ""
         if int(task.get("fail_count") or 0):
             return "失败 3 次会自动停用"
@@ -1435,11 +1435,7 @@ class _Editor:
         on = bool(self.sched_enabled_var.get())
         config.set_scheduled({"enabled": on})
         if on:
-            bad = [t.get("name") for t in config.get_scheduled()["tasks"] if not t.get("verified")]
-            if bad:
-                self._flash(f"已启用；但「{bad[0]}」还没试运行，不会执行", "warn")
-            else:
-                self._flash("已启用定时任务", "ok")
+            self._flash("已启用定时任务", "ok")
         else:
             self._flash("已关闭定时任务", "info")
         self._refresh_sched_status()
@@ -1451,7 +1447,7 @@ class _Editor:
             return
         data = config.get_scheduled()
         tasks = data.get("tasks") or []
-        ready = [t for t in tasks if t.get("enabled") and t.get("verified")]
+        ready = [t for t in tasks if t.get("enabled")]
         enabled = bool(data.get("enabled"))
 
         if enabled:
