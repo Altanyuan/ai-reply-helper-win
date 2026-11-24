@@ -317,7 +317,7 @@ build.bat
 - **`build.bat` 必须保持纯 ASCII**：cmd 解析 UTF-8 中文注释时会吞掉 `rem` 关键字，
   报 `'…' is not recognized as an internal or external command`（`chcp 65001` 也救不了）。
 - **杀软误报**：PyInstaller 单文件常被 Defender 误报（无代码签名）。让朋友选择「允许 / 添加信任」即可。
-- **体积**：当前约 114MB（119,856,370 字节）。v2.0.6 做了第一档瘦身：按 `PKG-00.toc`
+- **体积**：当前约 114MB（119,895,903 字节）。v2.0.6 做了第一档瘦身：按 `PKG-00.toc`
   逐项审计后排除 scipy / lxml / cryptography / pywin32 / AVIF 插件等零引用依赖，
   并去掉 cv2 只服务 `VideoCapture` 的 ffmpeg dll，**167MB → 114MB（-31.6%）**。
   还能再降：`1.webp`/`2.webp`/`companions` 的动图资源共约 21MB 载荷，预压后可再省 10~14MB
