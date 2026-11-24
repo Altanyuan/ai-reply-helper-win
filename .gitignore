@@ -40,3 +40,5 @@ venv/
 .codebuddy/
 .vscode/
 .idea/
+scheduled_shots/
+debug_frame_last.png
