@@ -914,8 +914,6 @@ def normalize_task(task):
     t["last_run"] = str(t.get("last_run") or "")
     t["fail_count"] = int(t.get("fail_count") or 0)
     t["last_result"] = str(t.get("last_result") or "")
-    if t["enabled"] and not t["verified"]:
-        t["enabled"] = False          # 未验证不允许启用
     return t, None
 
 
@@ -955,8 +953,9 @@ def upsert_task(task):
             if t["text"] != old.get("text") or t["target"] != old.get("target") \
                     or t["kind"] != old.get("kind") or t["time"] != old.get("time") \
                     or t["at"] != old.get("at"):
-                t["verified"] = False      # 内容/目标/时间变了，得重新试一次
-                t["enabled"] = False
+                # 内容/目标/时间变了：标记需要重新确认，但不再强制停用
+                # （用户已把「试一次」从界面移除，停用会让任务悄悄失效）
+                t["verified"] = False
             tasks[i] = t
             break
     else:

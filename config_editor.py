@@ -1349,29 +1349,39 @@ class _Editor:
             actions.pack(fill="x", pady=(6, 0))
             _mk_link(actions, "编辑", lambda t=task: self._on_task_edit(t),
                      bg=CARD_BG, fg=TEXT).pack(side="left")
-            _mk_link(actions, "试一次", lambda t=task: self._on_task_try(t),
-                     bg=CARD_BG, fg=TEXT).pack(side="left", padx=(14, 0))
+
+            # 一次性任务执行过就不能再启用（重发请新建一条，避免"以为每天发"）
+            executed_once = bool(task.get("kind") == "once" and task.get("last_run"))
+            if executed_once:
+                _mk_label(actions, "已执行", "#a8b0b8", SMALL_FONT).pack(
+                    side="left", padx=(14, 0))
+            else:
+                on = bool(task.get("enabled"))
+                _mk_link(actions, "停用" if on else "启用",
+                         lambda t=task: self._on_task_toggle(t),
+                         bg=CARD_BG,
+                         fg=MUTED if on else ACCENT,
+                         hover_fg=ACCENT).pack(side="left", padx=(14, 0))
+
             _mk_link(actions, "删除", lambda t=task: self._on_task_delete(t),
                      bg=CARD_BG, fg=DANGER, hover_fg=DANGER).pack(side="left", padx=(14, 0))
             tk.Label(actions, text=self._task_next_text(task), bg=CARD_BG,
                      fg="#a8b0b8", font=SMALL_FONT, anchor="e").pack(side="right")
 
     def _task_state_text(self, task) -> str:
-        if not task.get("verified"):
-            return "未试运行"
         fail = int(task.get("fail_count") or 0)
         if fail:
             return f"失败 {fail} 次"
         if not task.get("enabled"):
-            return "已完成 · 已停用" if task.get("last_result") == "已完成" else "已停用"
+            if task.get("kind") == "once" and task.get("last_run"):
+                return "已完成"
+            return "已停用"
         last = str(task.get("last_result") or "")
-        if last and last != "已完成":
+        if last.startswith("失败") or last.startswith("已发送"):
             return last
-        return "等待执行"
+        return "待执行"
 
     def _task_state_color(self, task) -> str:
-        if not task.get("verified"):
-            return WARN
         if int(task.get("fail_count") or 0):
             return WARN
         if not task.get("enabled"):
@@ -1544,6 +1554,8 @@ class _Editor:
             # 选中变绿底，文字要跟着转白，否则绿底灰字很难看
             var.trace_add("write", lambda *_a, v=var, c=cb:
                           c.configure(fg="#ffffff" if v.get() else MUTED))
+            # trace 只在"变化时"触发，编辑已有任务时初始就是选中的，得补一次
+            cb.configure(fg="#ffffff" if var.get() else MUTED)
         _mk_label(day_row, "全不选 = 每天", "#a8b0b8", SMALL_FONT).pack(side="left", padx=(6, 0))
 
         once_row = tk.Frame(outer, bg=PANEL)
@@ -1598,12 +1610,9 @@ class _Editor:
             _refresh_hint()
 
         def _refresh_hint():
-            cur = task if not is_new else None
-            if cur and cur.get("verified"):
-                hint_label.configure(text="已试运行通过，可以直接启用。修改内容/目标/时间后需要重新试一次。")
-            else:
-                hint_label.configure(
-                    text="还没试过。先点「试一次」——它会走到输入框就停住、截图给你看，不发出去。")
+            hint_label.configure(
+                text="保存并启用后，到点会自动把微信切到前台、搜索这个人、把内容发出去。"
+                     "执行那十几秒里别同时操作微信。")
 
         foot = tk.Frame(outer, bg=PANEL)
         foot.pack(fill="x", pady=(2, 0))
@@ -1636,17 +1645,11 @@ class _Editor:
             if err:
                 messagebox.showerror("保存失败", err, parent=dlg)
                 return None
-            if enable and not saved.get("verified"):
+            if enable and saved.get("kind") == "once" and saved.get("last_run"):
                 messagebox.showwarning(
-                    "请先试一次",
-                    "这个任务还没试运行过，不能启用。\n\n"
-                    "点「试一次」走一遍流程：它会切到对方的会话、把内容填进输入框，"
-                    "截图给你确认，但不按回车。", parent=dlg)
-                task.clear()
-                task.update(saved)
-                self._render_tasks()
-                self._refresh_sched_status()
-                return saved
+                    "这条已执行过",
+                    "一次性任务执行过之后不能再启用。\n\n需要重发请新建一条。",
+                    parent=dlg)
             task.clear()
             task.update(saved)
             self._render_tasks()
@@ -1674,7 +1677,6 @@ class _Editor:
                 pass
             self._run_task_dry(saved)
 
-        _mk_btn(foot, "试一次", do_try, "secondary").pack(side="left")
         _mk_btn(foot, "保存并启用",
                 lambda: do_save(enable=True), "primary").pack(side="right")
         _mk_btn(foot, "保存", lambda: do_save(enable=False),
@@ -1737,6 +1739,21 @@ class _Editor:
                 pass
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_task_toggle(self, task):
+        """列表里的启用/停用。一次性任务执行过之后不允许再启用。"""
+        tid = task.get("id")
+        if task.get("enabled"):
+            config.update_task(tid, {"enabled": False})
+            self._flash(f"已停用「{task.get('name')}」", "info")
+        else:
+            if task.get("kind") == "once" and task.get("last_run"):
+                self._flash("这条任务已经执行过，不能再启用；需要重发请新建一条", "warn")
+                return
+            config.update_task(tid, {"enabled": True})
+            self._flash(f"已启用「{task.get('name')}」", "ok")
+        self._render_tasks()
+        self._refresh_sched_status()
 
     def _on_task_new(self):
         self._open_task_dialog(None)
