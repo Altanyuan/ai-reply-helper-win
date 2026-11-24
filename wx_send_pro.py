@@ -100,10 +100,18 @@ def client_origin(hwnd: int) -> tuple[int, int]:
 
 
 def click_at(hwnd: int, x: int, y: int, settle: float = 0.25):
+    """在窗口客户区坐标 (x, y) 处点击。
+
+    时序比想象中重要（实测）：先把光标移过去、停 0.18 秒让目标窗口更新 hover 状态，
+    再分 press/release。直接 `_mouse.click()`（移完立刻按）在列表项上会"点了个空"——
+    画面有反应（搜索面板关掉）但没选中会话。
+    """
     ox, oy = client_origin(hwnd)
     _mouse.position = (ox + int(x), oy + int(y))
-    time.sleep(0.05)
-    _mouse.click(Button.left)
+    time.sleep(0.18)
+    _mouse.press(Button.left)
+    time.sleep(0.06)
+    _mouse.release(Button.left)
     time.sleep(settle)
 
 
@@ -419,9 +427,26 @@ class WeChatSender:
                 section, name, _rank, (cx, cy) = self._pick_friend(found, target)
                 log.info("[定时任务] 搜索「%s」→ 命中「%s」分区：%s", target, section, name)
 
-                # 4) 点进会话
-                click_at(self.hwnd, cx, cy, settle=1.0)
+                # 4) 点进会话。
+                #    注意：搜索框有焦点时，**第一次点击只是让搜索框失焦**，不会选中会话
+                #    （实测 2026-11-24：点完停在普通会话列表、右侧空白，标题读成「未识别」）。
+                #    所以点一次后要校验，没进去就补一次。
+                #    处理办法：先点聊天区空白让搜索框失焦，再点目标行。
+                blank_x = int((area[0] + area[2]) / 2)
+                blank_y = int((area[1] + area[3]) / 2)
+                click_at(self.hwnd, blank_x, blank_y, settle=0.5)
+                time.sleep(0.35)
+                click_at(self.hwnd, cx, cy, settle=1.2)
                 full, area = self._grab()
+                if norm(self._title(full, area)) != norm(target):
+                    log.info("[定时任务] 点击后没进入会话，再点一次目标行")
+                    click_at(self.hwnd, cx, cy, settle=1.3)
+                    full, area = self._grab()
+                if norm(self._title(full, area)) != norm(target):
+                    log.info("[定时任务] 仍没进入，尝试回车确认")
+                    press_key(Key.enter)
+                    time.sleep(1.2)
+                    full, area = self._grab()
                 shot = self._save_shot(full, tag + "_opened")
 
             # 5) 校验会话
