@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import paths
@@ -186,6 +187,15 @@ DEFAULTS = {
         "ctrl_enter": False,         # 微信若设了 Ctrl+Enter 发送，这里要打开
         "activate_window": False,    # 允许发送时把微信切到前台（微信在后台也能回）
     },
+    # 定时任务：到点给对方（目前只支持好友）发指定内容。
+    # tasks[*].kind = "daily"（每天 time + days）或 "once"（at 指定时刻）。
+    "scheduled": {
+        "enabled": False,
+        "scan_sec": 20,          # 调度线程扫描周期
+        "catch_up_min": 0,       # 错过时间后在多少分钟内补发；0 = 不补
+        "restore_focus": True,   # 执行完把焦点还给原窗口
+        "tasks": [],
+    },
 }
 
 
@@ -237,6 +247,12 @@ def load_config():
             if not isinstance(merged.get("contacts"), list):
                 merged["contacts"] = []
             cfg["auto_reply"] = merged
+        if isinstance(data.get("scheduled"), dict):
+            merged = {**DEFAULTS["scheduled"], "tasks": []}
+            merged.update(data["scheduled"])
+            if not isinstance(merged.get("tasks"), list):
+                merged["tasks"] = []
+            cfg["scheduled"] = merged
 
     # 多模型配置：若存在 models，用它解析出「当前生效」的 api_base / model / api_key。
     # 放在环境变量之前，保证环境变量仍然拥有最高优先级（便于临时覆盖 / 保密）。
@@ -800,3 +816,171 @@ def remove_auto_contact(name):
     contacts = [c for c in data["contacts"] if c["name"] != name]
     set_auto_reply({"contacts": contacts})
     return get_auto_reply()
+
+
+# ---------- 定时任务 ----------
+
+_TASK_KINDS = ("daily", "once")
+
+
+def get_scheduled():
+    """返回定时任务配置（补齐默认值，过滤非法条目，规范化字段）。"""
+    raw = load_config().get("scheduled") or {}
+    out = {**DEFAULTS["scheduled"], "tasks": []}
+    out.update({k: v for k, v in raw.items() if k != "tasks"})
+
+    tasks = []
+    for t in raw.get("tasks") or []:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or "").strip()
+        target = str(t.get("target") or "").strip()
+        text = str(t.get("text") or "")
+        kind = str(t.get("kind") or "daily").strip()
+        if not tid or not target or kind not in _TASK_KINDS:
+            continue
+        tasks.append({
+            "id": tid,
+            "name": str(t.get("name") or target).strip() or target,
+            "enabled": bool(t.get("enabled")),
+            "kind": kind,
+            "time": str(t.get("time") or "").strip(),
+            "days": [int(d) for d in (t.get("days") or []) if isinstance(d, int) and 1 <= d <= 7],
+            "at": str(t.get("at") or "").strip(),
+            "target": target,
+            "type": "friend",
+            "text": text,
+            "verified": bool(t.get("verified")),
+            "last_run": str(t.get("last_run") or ""),
+            "fail_count": int(t.get("fail_count") or 0),
+            "last_result": str(t.get("last_result") or ""),
+        })
+    out["tasks"] = tasks
+    return out
+
+
+def set_scheduled(patch):
+    """局部更新 scheduled 段。"""
+    cur = dict(load_config().get("scheduled") or {})
+    cur.update(patch or {})
+    update_config({"scheduled": cur})
+    return cur
+
+
+def new_task_id():
+    return "t_" + uuid.uuid4().hex[:8]
+
+
+def normalize_task(task):
+    """把界面传进来的任务字典规范化；返回 (task, error)。"""
+    t = dict(task or {})
+    kind = str(t.get("kind") or "daily").strip()
+    if kind not in _TASK_KINDS:
+        return None, "任务类型无效"
+    target = str(t.get("target") or "").strip()
+    if not target:
+        return None, "请填写要发送给谁"
+    text = str(t.get("text") or "").strip()
+    if not text:
+        return None, "请填写要发送的内容"
+
+    t["kind"] = kind
+    t["target"] = target
+    t["type"] = "friend"
+    t["text"] = text
+    t["name"] = (str(t.get("name") or "").strip() or target)
+    t["days"] = [int(d) for d in (t.get("days") or []) if isinstance(d, int) and 1 <= d <= 7]
+    t["id"] = str(t.get("id") or "").strip() or new_task_id()
+
+    if kind == "daily":
+        hhmm = str(t.get("time") or "").strip()
+        h, m, err = _parse_hhmm(hhmm)
+        if err:
+            return None, "每天的时间格式要像 09:00"
+        t["time"] = f"{h:02d}:{m:02d}"
+        t["at"] = ""
+    else:
+        at = str(t.get("at") or "").strip()
+        dt = _parse_at(at)
+        if dt is None:
+            return None, "执行时间格式要像 2026-11-26 14:30"
+        if dt <= datetime.now():
+            return None, "执行时间已经过去了，请选一个将来的时间"
+        t["at"] = dt.strftime("%Y-%m-%d %H:%M")
+        t["time"] = ""
+
+    t["enabled"] = bool(t.get("enabled"))
+    t["verified"] = bool(t.get("verified"))
+    t["last_run"] = str(t.get("last_run") or "")
+    t["fail_count"] = int(t.get("fail_count") or 0)
+    t["last_result"] = str(t.get("last_result") or "")
+    if t["enabled"] and not t["verified"]:
+        t["enabled"] = False          # 未验证不允许启用
+    return t, None
+
+
+def _parse_hhmm(text):
+    try:
+        parts = str(text or "").replace("：", ":").strip().split(":")
+        h, m = int(parts[0]), int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m, None
+    except Exception:
+        pass
+    return 0, 0, "bad"
+
+
+def _parse_at(text):
+    for fmt in ("%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(str(text or "").strip(), fmt)
+        except Exception:
+            continue
+    return None
+
+
+def upsert_task(task):
+    """新增或更新一条任务，返回 (task, error)。"""
+    t, err = normalize_task(task)
+    if err:
+        return None, err
+    data = get_scheduled()
+    tasks = data["tasks"]
+    for i, old in enumerate(tasks):
+        if old["id"] == t["id"]:
+            # 保留上次执行相关字段（界面可能没传）
+            t["last_run"] = t.get("last_run") or old.get("last_run", "")
+            t["fail_count"] = t.get("fail_count", old.get("fail_count", 0))
+            t["last_result"] = t.get("last_result") or old.get("last_result", "")
+            if t["text"] != old.get("text") or t["target"] != old.get("target") \
+                    or t["kind"] != old.get("kind") or t["time"] != old.get("time") \
+                    or t["at"] != old.get("at"):
+                t["verified"] = False      # 内容/目标/时间变了，得重新试一次
+                t["enabled"] = False
+            tasks[i] = t
+            break
+    else:
+        tasks.append(t)
+    set_scheduled({"tasks": tasks})
+    return t, None
+
+
+def update_task(tid, patch):
+    """局部更新某条任务（调度器用于写 last_run / fail_count / enabled）。"""
+    data = get_scheduled()
+    tasks = data["tasks"]
+    for i, t in enumerate(tasks):
+        if t["id"] == tid:
+            merged = dict(t)
+            merged.update(patch or {})
+            tasks[i] = merged
+            set_scheduled({"tasks": tasks})
+            return merged
+    return None
+
+
+def remove_task(tid):
+    data = get_scheduled()
+    tasks = [t for t in data["tasks"] if t["id"] != tid]
+    set_scheduled({"tasks": tasks})
+    return data["tasks"]

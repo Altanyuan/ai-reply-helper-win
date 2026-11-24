@@ -34,6 +34,10 @@ from contact_rules import resolve_prompt_id
 log = logging.getLogger("polish")
 
 _STATE_FILE = "auto_reply_state.json"
+
+# 微信操作互斥锁：自动回复和定时任务都要抢它，否则两个线程会同时输入/点击。
+# 非阻塞获取，拿不到就跳过本轮（不排队，排队会让画面被反复抢焦点）。
+wechat_lock = threading.Lock()
 _REPLIED_KEEP = 20
 
 
@@ -272,6 +276,15 @@ class AutoReplier:
 
     # ---- 一轮 ----
     def _tick(self, delay_override: float | None = None):
+        if not wechat_lock.acquire(blocking=False):
+            self._say("微信正被定时任务占用，本轮跳过")
+            return
+        try:
+            self._tick_inner(delay_override)
+        finally:
+            wechat_lock.release()
+
+    def _tick_inner(self, delay_override: float | None = None):
         cfg = config.load_config()
         ar = cfg.get("auto_reply") or {}
 

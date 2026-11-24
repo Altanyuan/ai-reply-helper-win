@@ -12,6 +12,7 @@ from pynput import keyboard, mouse as pynput_mouse
 
 import config
 import auto_reply
+import scheduler
 import companions
 import first_run
 import paths
@@ -26,11 +27,20 @@ from tray_widget import make_tray
 
 tray = None  # 右下角浮动动图组件，main() 中初始化
 auto_replier = None  # 自动回复调度器，main() 中初始化
+task_scheduler = None  # 定时任务调度器，main() 中初始化
 
 
 def _auto_notify(msg, kind="info"):
     """自动回复的状态提示统一走日志，避免弹窗打断用户。"""
     log.info("[自动回复] %s", msg)
+
+
+def _task_notify(msg, kind="info"):
+    """定时任务的状态提示。失败时额外写一条 WARNING 便于 grep。"""
+    if kind == "warn":
+        log.warning("[定时任务] %s", msg)
+    else:
+        log.info("[定时任务] %s", msg)
 
 logging.basicConfig(
     filename=str(paths.log_path()),
@@ -511,7 +521,7 @@ def on_activate():
 
 
 def main():
-    global tray, auto_replier
+    global tray, auto_replier, task_scheduler
     _ensure_single_instance()      # 先接管旧实例，保证唯一且为最新修复版
     cfg = config.load_config()
 
@@ -593,6 +603,14 @@ def main():
     else:
         log.info("自动回复：未启用")
 
+    # 定时任务调度器：同样常驻，是否动作看配置里的总开关
+    task_scheduler = scheduler.Scheduler(notify=_task_notify)
+    scheduler.CURRENT = task_scheduler
+    task_scheduler.start()
+    _sc = cfg.get("scheduled") or {}
+    log.info("定时任务：%s，共 %d 个任务",
+             "已启用" if _sc.get("enabled") else "未启用", len(_sc.get("tasks") or []))
+
     hotkeys = keyboard.GlobalHotKeys({combo: on_activate})
     hotkeys.start()
 
@@ -619,6 +637,8 @@ def main():
         mouse_listener.stop()
         if auto_replier:
             auto_replier.stop()
+        if task_scheduler:
+            task_scheduler.stop()
         if tray:
             tray.stop()
         log.info("已退出")

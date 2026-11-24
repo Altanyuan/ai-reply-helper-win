@@ -20,13 +20,16 @@
 存储说明：API Key 按当前约定**明文**保存在本机 config.json；界面负责脱敏展示，
 分发 / 备份时不要带上该文件（打包脚本已排除）。
 """
+import os
 import threading
+from datetime import datetime, timedelta
 import tkinter as tk
 import tkinter.simpledialog as simpledialog
 import tkinter.font as tkfont
 
 import auto_reply
 import config
+import scheduler as scheduler_mod
 import companions
 import key_utils
 import paths
@@ -347,6 +350,7 @@ class _Editor:
         for key, label in (("prompts", "提示词"),
                            ("contacts", "联系人规则"),
                            ("auto_reply", "自动回复"),
+                           ("scheduled", "定时任务"),
                            ("companion", "智能伙伴"),
                            ("models", "模型与 Key")):
             _nav_item(key, label)
@@ -365,6 +369,7 @@ class _Editor:
         self.tab_prompts = tk.Frame(self.body, bg=BG)
         self.tab_contacts = tk.Frame(self.body, bg=BG)
         self.tab_auto = tk.Frame(self.body, bg=BG)
+        self.tab_scheduled = tk.Frame(self.body, bg=BG)
         self.tab_companion = tk.Frame(self.body, bg=BG)
         self.tab_models = tk.Frame(self.body, bg=BG)
         self.tab_usage = tk.Frame(self.body, bg=BG)
@@ -372,6 +377,7 @@ class _Editor:
         self._build_prompts_tab()
         self._build_contact_rules_tab()
         self._build_auto_reply_tab()
+        self._build_scheduled_tab()
         self._build_companion_tab()
         self._build_models_tab()
         self._build_usage_tab()
@@ -381,6 +387,7 @@ class _Editor:
             "prompts": self.tab_prompts,
             "contacts": self.tab_contacts,
             "auto_reply": self.tab_auto,
+            "scheduled": self.tab_scheduled,
             "companion": self.tab_companion,
             "models": self.tab_models,
             "usage": self.tab_usage,
@@ -1239,6 +1246,512 @@ class _Editor:
         self._flash(
             "已开启：微信在后台也会被切到前台发送（会短暂抢一次焦点）" if on
             else "已关闭：只有微信在前台时才回复", "ok" if on else "info")
+
+    # ================= 定时任务页签 =================
+
+    def _build_scheduled_tab(self):
+        wrap = tk.Frame(self.tab_scheduled, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=24, pady=18)
+        wrap.columnconfigure(0, weight=1)
+        wrap.rowconfigure(2, weight=1)
+
+        heading = tk.Frame(wrap, bg=BG)
+        heading.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        heading.columnconfigure(1, weight=1)
+        tk.Label(heading, text="定时任务", bg=BG, fg=TEXT, font=TITLE_FONT,
+                 anchor="w").grid(row=0, column=0, sticky="w")
+        self.sched_badge = tk.Label(heading, text="未启用", bg=ACTIVE_BG, fg=MUTED,
+                                    font=SMALL_FONT, padx=8, pady=2)
+        self.sched_badge.grid(row=0, column=2, sticky="e", padx=(0, 12))
+        _mk_btn(heading, "+ 新建任务", self._on_task_new,
+                "primary").grid(row=0, column=3, sticky="e")
+        self.sched_sub = tk.Label(heading, text="到点自动给指定的人发消息",
+                                  bg=BG, fg=MUTED, font=SMALL_FONT, anchor="w",
+                                  justify="left")
+        self.sched_sub.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(3, 0))
+        _bind_wraplength(self.sched_sub, wrap, pad=48, min_w=200)
+
+        data = config.get_scheduled()
+        master = tk.Frame(wrap, bg=CARD_BG, highlightthickness=1,
+                          highlightbackground=BORDER)
+        master.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.sched_enabled_var = tk.BooleanVar(master=self.root,
+                                               value=bool(data.get("enabled")))
+        tk.Checkbutton(master, text="启用定时任务", variable=self.sched_enabled_var,
+                       bg=CARD_BG, fg=TEXT, font=LABEL_FONT, anchor="w",
+                       activebackground=CARD_BG, activeforeground=TEXT,
+                       selectcolor=CARD_BG, highlightthickness=0, bd=0,
+                       command=self._on_sched_toggle).pack(
+                           side="left", padx=(12, 10), pady=9)
+        _mk_label(master, "到点会把微信切到前台执行，会打断你当前操作",
+                  MUTED, SMALL_FONT).pack(side="left", pady=9)
+
+        self.task_list = _ScrollList(wrap)
+        self.task_list.outer.grid(row=2, column=0, sticky="nsew")
+
+        self._render_tasks()
+        self._refresh_sched_status()
+
+    def _render_tasks(self):
+        host = getattr(self, "task_list", None)
+        if host is None:
+            return
+        host.clear()
+        data = config.get_scheduled()
+        tasks = data.get("tasks") or []
+
+        if not tasks:
+            _mk_label(host.inner, "还没有任务。点右上角「+ 新建任务」。",
+                      MUTED, SMALL_FONT).pack(anchor="w", padx=16, pady=16)
+            return
+
+        for task in tasks:
+            enabled = bool(task.get("enabled"))
+            verified = bool(task.get("verified"))
+            fail_count = int(task.get("fail_count") or 0)
+            last_result = str(task.get("last_result") or "")
+
+            if task.get("kind") == "once" and enabled and last_result == "已完成":
+                bar_color, name_fg = "#dfe3e6", MUTED
+            elif fail_count:
+                bar_color, name_fg = WARN, TEXT
+            elif not enabled:
+                bar_color, name_fg = "#dfe3e6", MUTED
+            else:
+                bar_color, name_fg = ACCENT, TEXT
+
+            card = tk.Frame(host.inner, bg=BORDER, padx=1, pady=1)
+            card.pack(fill="x", padx=4, pady=4)
+            body = tk.Frame(card, bg=CARD_BG)
+            body.pack(fill="x", expand=True)
+            tk.Frame(body, bg=bar_color, width=3).pack(side="left", fill="y")
+
+            info = tk.Frame(body, bg=CARD_BG)
+            info.pack(side="left", fill="x", expand=True, padx=(12, 12), pady=(9, 9))
+
+            row1 = tk.Frame(info, bg=CARD_BG)
+            row1.pack(fill="x")
+            tk.Label(row1, text=task.get("name") or task.get("target"),
+                     bg=CARD_BG, fg=name_fg, font=NAME_FONT, anchor="w").pack(side="left")
+            tk.Label(row1, text=self._task_state_text(task), bg=CARD_BG,
+                     fg=self._task_state_color(task), font=SMALL_FONT,
+                     anchor="e").pack(side="right")
+
+            tk.Label(info, text=self._task_when_text(task), bg=CARD_BG, fg=MUTED,
+                     font=SMALL_FONT, anchor="w").pack(anchor="w", pady=(3, 0))
+
+            if fail_count and last_result and not last_result.startswith("已完成"):
+                tk.Label(info, text=f"最近一次：{last_result.replace('失败：', '')}",
+                         bg=CARD_BG, fg=WARN, font=SMALL_FONT, anchor="w",
+                         justify="left", wraplength=520).pack(anchor="w", pady=(3, 0))
+
+            actions = tk.Frame(info, bg=CARD_BG)
+            actions.pack(fill="x", pady=(6, 0))
+            _mk_link(actions, "编辑", lambda t=task: self._on_task_edit(t),
+                     bg=CARD_BG, fg=TEXT).pack(side="left")
+            _mk_link(actions, "试一次", lambda t=task: self._on_task_try(t),
+                     bg=CARD_BG, fg=TEXT).pack(side="left", padx=(14, 0))
+            _mk_link(actions, "删除", lambda t=task: self._on_task_delete(t),
+                     bg=CARD_BG, fg=DANGER, hover_fg=DANGER).pack(side="left", padx=(14, 0))
+            tk.Label(actions, text=self._task_next_text(task), bg=CARD_BG,
+                     fg="#a8b0b8", font=SMALL_FONT, anchor="e").pack(side="right")
+
+    def _task_state_text(self, task) -> str:
+        if not task.get("verified"):
+            return "未试运行"
+        fail = int(task.get("fail_count") or 0)
+        if fail:
+            return f"失败 {fail} 次"
+        if not task.get("enabled"):
+            return "已完成 · 已停用" if task.get("last_result") == "已完成" else "已停用"
+        last = str(task.get("last_result") or "")
+        if last and last != "已完成":
+            return last
+        return "等待执行"
+
+    def _task_state_color(self, task) -> str:
+        if not task.get("verified"):
+            return WARN
+        if int(task.get("fail_count") or 0):
+            return WARN
+        if not task.get("enabled"):
+            return "#a8b0b8"
+        return ACCENT
+
+    def _task_when_text(self, task) -> str:
+        target = task.get("target") or ""
+        if task.get("kind") == "daily":
+            days = task.get("days") or []
+            if not days:
+                when = f"每天 {task.get('time')}"
+            elif sorted(days) == [1, 2, 3, 4, 5]:
+                when = f"工作日 {task.get('time')}"
+            else:
+                names = "".join("一二三四五六日"[d - 1] for d in sorted(days))
+                when = f"每周{names} {task.get('time')}"
+        else:
+            when = f"{task.get('at')}（一次性）"
+        return f"{when} · 好友「{target}」"
+
+    def _task_next_text(self, task) -> str:
+        if not task.get("enabled") or not task.get("verified"):
+            return ""
+        if int(task.get("fail_count") or 0):
+            return "失败 3 次会自动停用"
+        if task.get("kind") == "once":
+            return task.get("at") or ""
+        time_str = task.get("time") or "00:00"
+        days = task.get("days") or []
+        try:
+            h, m = [int(x) for x in time_str.split(":")[:2]]
+        except Exception:
+            return ""
+        now = datetime.now()
+        for delta in range(0, 8):
+            d = now + timedelta(days=delta)
+            if days and d.isoweekday() not in days:
+                continue
+            cand = d.replace(hour=h, minute=m, second=0, microsecond=0)
+            if cand <= now:
+                continue
+            if delta == 0:
+                return f"下次 今天 {time_str}"
+            if delta == 1:
+                return f"下次 明天 {time_str}"
+            return f"下次 {'一二三四五六日'[d.isoweekday() - 1]} {time_str}"
+        return ""
+
+    def _on_sched_toggle(self):
+        on = bool(self.sched_enabled_var.get())
+        config.set_scheduled({"enabled": on})
+        if on:
+            bad = [t.get("name") for t in config.get_scheduled()["tasks"] if not t.get("verified")]
+            if bad:
+                self._flash(f"已启用；但「{bad[0]}」还没试运行，不会执行", "warn")
+            else:
+                self._flash("已启用定时任务", "ok")
+        else:
+            self._flash("已关闭定时任务", "info")
+        self._refresh_sched_status()
+
+    def _refresh_sched_status(self):
+        badge = getattr(self, "sched_badge", None)
+        sub = getattr(self, "sched_sub", None)
+        if badge is None:
+            return
+        data = config.get_scheduled()
+        tasks = data.get("tasks") or []
+        ready = [t for t in tasks if t.get("enabled") and t.get("verified")]
+        enabled = bool(data.get("enabled"))
+
+        if enabled:
+            text = f"运行中 · 待发 {len(ready)} 条"
+        else:
+            text = "未启用"
+        try:
+            badge.configure(text=text,
+                            bg=ACTIVE_BG if enabled else "#eceff1",
+                            fg=ACCENT if enabled else MUTED)
+        except Exception:
+            pass
+        if sub is not None:
+            try:
+                sub.configure(text=f"到点自动给指定的人发消息 · 共 {len(tasks)} 个任务")
+            except Exception:
+                pass
+
+    # ---------- 任务编辑弹窗 ----------
+
+    def _open_task_dialog(self, task):
+        """新建/编辑任务。字段与交互严格对齐设计稿：两种时间类型单选、星期 chips。"""
+        is_new = not task
+        task = dict(task or {})
+        dlg = tk.Toplevel(self.root)
+        dlg.title("新建任务" if is_new else "编辑任务")
+        dlg.configure(bg=PANEL)
+        dlg.geometry("520x600")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+
+        name_var = tk.StringVar(master=self.root, value=task.get("name") or "")
+        target_var = tk.StringVar(master=self.root, value=task.get("target") or "")
+        kind_var = tk.StringVar(master=self.root, value=task.get("kind") or "daily")
+        time_var = tk.StringVar(master=self.root, value=task.get("time") or "09:00")
+        at_date_var = tk.StringVar(master=self.root, value="")
+        at_time_var = tk.StringVar(master=self.root, value="14:30")
+        if task.get("at"):
+            parts = str(task["at"]).split(" ")
+            at_date_var.set(parts[0] if parts else "")
+            at_time_var.set(parts[1] if len(parts) > 1 else "14:30")
+        else:
+            from datetime import date as _date
+            at_date_var.set(_date.today().strftime("%Y-%m-%d"))
+        day_vars = []
+        for d in range(1, 8):
+            day_vars.append(tk.BooleanVar(master=self.root, value=(d in (task.get("days") or []))))
+
+        outer = tk.Frame(dlg, bg=PANEL)
+        outer.pack(fill="both", expand=True, padx=16, pady=14)
+
+        def field_label(text, hint=""):
+            row = tk.Frame(outer, bg=PANEL)
+            row.pack(fill="x", pady=(0, 4))
+            _mk_label(row, text, MUTED, SMALL_FONT).pack(side="left")
+            if hint:
+                _mk_label(row, hint, "#a8b0b8", SMALL_FONT).pack(side="left", padx=(6, 0))
+            return row
+
+        field_label("任务名")
+        name_entry = _mk_entry(outer)
+        name_entry.configure(textvariable=name_var)
+        name_entry.pack(fill="x", ipady=4, pady=(0, 10))
+
+        field_label("发给谁", "按微信顶部显示的完整名字")
+        target_row = tk.Frame(outer, bg=PANEL)
+        target_row.pack(fill="x", pady=(0, 10))
+        target_entry = _mk_entry(target_row)
+        target_entry.configure(textvariable=target_var)
+        target_entry.pack(side="left", fill="x", expand=True, ipady=4)
+        tk.Label(target_row, text="好友", bg=FIELD_BG, fg=MUTED, font=SMALL_FONT,
+                 padx=10, pady=5).pack(side="left", padx=(8, 0))
+
+        field_label("什么时候")
+        kind_row = tk.Frame(outer, bg=PANEL)
+        kind_row.pack(fill="x", pady=(0, 4))
+        rb_daily = tk.Radiobutton(kind_row, text="每天", variable=kind_var, value="daily",
+                                  bg=PANEL, fg=TEXT, font=LABEL_FONT, activebackground=PANEL,
+                                  selectcolor=PANEL, highlightthickness=0, bd=0,
+                                  command=lambda: _sync_kind())
+        rb_daily.pack(side="left")
+        daily_time = _mk_entry(kind_row)
+        daily_time.configure(textvariable=time_var, width=8)
+        daily_time.pack(side="left", padx=(10, 0), ipady=3)
+
+        day_row = tk.Frame(outer, bg=PANEL)
+        day_row.pack(fill="x", padx=(26, 0), pady=(0, 8))
+        for i, var in enumerate(day_vars):
+            cb = tk.Checkbutton(day_row, text="一二三四五六日"[i], variable=var,
+                                indicatoron=False, bg=FIELD_BG, fg=MUTED,
+                                selectcolor=ACCENT, activebackground=ACCENT,
+                                activeforeground="#ffffff",
+                                font=SMALL_FONT, bd=0, padx=6, pady=2,
+                                highlightthickness=1, highlightbackground=FIELD_BORDER)
+            cb.pack(side="left", padx=(0, 5))
+            # 选中变绿底，文字要跟着转白，否则绿底灰字很难看
+            var.trace_add("write", lambda *_a, v=var, c=cb:
+                          c.configure(fg="#ffffff" if v.get() else MUTED))
+        _mk_label(day_row, "全不选 = 每天", "#a8b0b8", SMALL_FONT).pack(side="left", padx=(6, 0))
+
+        once_row = tk.Frame(outer, bg=PANEL)
+        once_row.pack(fill="x", pady=(0, 4))
+        rb_once = tk.Radiobutton(once_row, text="某一时刻", variable=kind_var, value="once",
+                                 bg=PANEL, fg=MUTED, font=LABEL_FONT, activebackground=PANEL,
+                                 selectcolor=PANEL, highlightthickness=0, bd=0,
+                                 command=lambda: _sync_kind())
+        rb_once.pack(side="left")
+        at_date = _mk_entry(once_row)
+        at_date.configure(textvariable=at_date_var, width=12)
+        at_date.pack(side="left", padx=(10, 0), ipady=3)
+        at_time = _mk_entry(once_row)
+        at_time.configure(textvariable=at_time_var, width=7)
+        at_time.pack(side="left", padx=(6, 0), ipady=3)
+        once_hint = _mk_label(outer, "执行一次后自动完成，不再重复", "#a8b0b8", SMALL_FONT)
+        once_hint.pack(anchor="w", padx=(26, 0), pady=(0, 10))
+
+        field_label("内容", "会原样发出，不做润色")
+        text_box = tk.Text(outer, height=4, width=1, bg=FIELD_BG, fg=TEXT,
+                           insertbackground=TEXT, relief="flat", borderwidth=0,
+                           highlightthickness=1, highlightbackground=FIELD_BORDER,
+                           highlightcolor=ACCENT, font=LABEL_FONT, wrap="word",
+                           padx=8, pady=6)
+        text_box.pack(fill="x", pady=(0, 6))
+        text_box.insert("1.0", task.get("text") or "")
+
+        hint_box = tk.Frame(outer, bg="#fdf6e8")
+        hint_box.pack(fill="x", pady=(0, 10))
+        tk.Frame(hint_box, bg=WARN, width=3).pack(side="left", fill="y")
+        hint_label = tk.Label(hint_box, text="", bg="#fdf6e8", fg="#8a5a12",
+                              font=SMALL_FONT, anchor="w", justify="left",
+                              wraplength=420, padx=8, pady=6)
+        hint_label.pack(side="left", fill="x", expand=True)
+
+        def _sync_kind():
+            daily = kind_var.get() == "daily"
+            for w in (daily_time,):
+                w.configure(state="normal" if daily else "disabled")
+            for w in day_row.winfo_children():
+                try:
+                    w.configure(state="normal" if daily else "disabled")
+                except Exception:
+                    pass
+            for w in (at_date, at_time):
+                w.configure(state="disabled" if daily else "normal")
+            try:
+                rb_daily.configure(fg=TEXT if daily else MUTED)
+                rb_once.configure(fg=MUTED if daily else TEXT)
+            except Exception:
+                pass
+            _refresh_hint()
+
+        def _refresh_hint():
+            cur = task if not is_new else None
+            if cur and cur.get("verified"):
+                hint_label.configure(text="已试运行通过，可以直接启用。修改内容/目标/时间后需要重新试一次。")
+            else:
+                hint_label.configure(
+                    text="还没试过。先点「试一次」——它会走到输入框就停住、截图给你看，不发出去。")
+
+        foot = tk.Frame(outer, bg=PANEL)
+        foot.pack(fill="x", pady=(2, 0))
+
+        def collect():
+            days = [i + 1 for i, v in enumerate(day_vars) if v.get()]
+            at = f"{at_date_var.get().strip()} {at_time_var.get().strip()}".strip()
+            return {
+                "id": task.get("id") or "",
+                "name": name_var.get().strip(),
+                "target": target_var.get().strip(),
+                "text": text_box.get("1.0", "end").strip(),
+                "kind": kind_var.get(),
+                "time": time_var.get().strip(),
+                "days": days,
+                "at": at,
+                "enabled": bool(task.get("enabled")),
+                "verified": bool(task.get("verified")),
+                "last_run": task.get("last_run") or "",
+                "fail_count": task.get("fail_count") or 0,
+                "last_result": task.get("last_result") or "",
+            }
+
+        def do_save(enable=False):
+            from tkinter import messagebox
+            payload = collect()
+            if enable:
+                payload["enabled"] = True
+            saved, err = config.upsert_task(payload)
+            if err:
+                messagebox.showerror("保存失败", err, parent=dlg)
+                return None
+            if enable and not saved.get("verified"):
+                messagebox.showwarning(
+                    "请先试一次",
+                    "这个任务还没试运行过，不能启用。\n\n"
+                    "点「试一次」走一遍流程：它会切到对方的会话、把内容填进输入框，"
+                    "截图给你确认，但不按回车。", parent=dlg)
+                task.clear()
+                task.update(saved)
+                self._render_tasks()
+                self._refresh_sched_status()
+                return saved
+            task.clear()
+            task.update(saved)
+            self._render_tasks()
+            self._refresh_sched_status()
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+            self._flash(f"已保存「{saved.get('name')}」" + ("并启用" if enable else ""), "ok")
+            return saved
+
+        def do_try():
+            from tkinter import messagebox
+            payload = collect()
+            payload["enabled"] = False
+            saved, err = config.upsert_task(payload)
+            if err:
+                messagebox.showerror("试运行失败", err, parent=dlg)
+                return
+            task.clear()
+            task.update(saved)
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+            self._run_task_dry(saved)
+
+        _mk_btn(foot, "试一次", do_try, "secondary").pack(side="left")
+        _mk_btn(foot, "保存并启用",
+                lambda: do_save(enable=True), "primary").pack(side="right")
+        _mk_btn(foot, "保存", lambda: do_save(enable=False),
+                "secondary").pack(side="right", padx=(0, 8))
+
+        _sync_kind()
+        _refresh_hint()
+        try:
+            dlg.update_idletasks()
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - 520) // 2
+            y = self.root.winfo_rooty() + 60
+            # 必须连尺寸一起给：只传 "+x+y" 时 Tk 会把尺寸重置成内容的请求宽度
+            # （实测弹窗被压到 337px，输入框和文本框全挤在一起）
+            dlg.geometry(f"520x600+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+    def _on_task_try(self, task):
+        self._run_task_dry(dict(task))
+
+    def _run_task_dry(self, task):
+        """试运行：完整走流程到输入框，不按回车。成功后标记 verified。"""
+        from tkinter import messagebox
+        self._flash("试运行中（会切到微信，大约 15 秒）…", "info")
+
+        def work():
+            detail, ok, shot = "", False, ""
+            try:
+                import wx_send_pro
+                shot_dir = str(paths.data_dir() / "scheduled_shots")
+                sender = wx_send_pro.WeChatSender(shot_dir=shot_dir)
+                ok, detail, shot = sender.send_to(
+                    task.get("target", ""), task.get("text", ""),
+                    dry_run=True, tag=task.get("id") or "task")
+            except Exception as e:
+                ok, detail = False, f"异常：{type(e).__name__}: {e}"
+
+            def done():
+                if ok:
+                    config.update_task(task.get("id"), {"verified": True, "last_result": ""})
+                    self._render_tasks()
+                    self._refresh_sched_status()
+                    msg = f"{detail}"
+                    if shot:
+                        msg += f"\n\n截图：{shot}"
+                    messagebox.showinfo("试运行通过", msg + "\n\n现在可以启用这个任务了。",
+                                        parent=self.root)
+                    if shot:
+                        try:
+                            os.startfile(shot)
+                        except Exception:
+                            pass
+                else:
+                    messagebox.showerror("试运行失败", detail, parent=self.root)
+                    self._flash("试运行失败", "err")
+
+            try:
+                self.root.after(0, done)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_task_new(self):
+        self._open_task_dialog(None)
+
+    def _on_task_edit(self, task):
+        self._open_task_dialog(dict(task))
+
+    def _on_task_delete(self, task):
+        name = task.get("name") or task.get("target")
+        if not self._confirm("删除任务", f"确定删除「{name}」？\n删除后不会再发送。"):
+            return
+        config.remove_task(task.get("id"))
+        self._render_tasks()
+        self._refresh_sched_status()
+        self._flash(f"已删除「{name}」", "ok")
 
     def _on_auto_try_once(self):
         """手动跑一轮：不用等 60 秒，也把随机延迟压到 3 秒，方便验证链路。"""
